@@ -269,7 +269,7 @@ async def debug_query(body: QueryRequest, request: Request):
     memory_ids = [sm.memory.id for sm in result["selected_memories"]]
     graph_paths = await _graph_paths_for(container.repository, memory_ids)
 
-    await container.cost_service.record_run(
+    run_record = await container.cost_service.record_run(
         agent_id=agent_id,
         conversation_id=body.conversation_id,
         query=body.query,
@@ -292,6 +292,9 @@ async def debug_query(body: QueryRequest, request: Request):
         context=result["context"],
         langsmith_run_id=str(run_tree.id) if run_tree else None,
         trace_metadata=result["trace_metadata"],
+        run_savings=run_record.savings,
+        run_baseline_cost=run_record.baseline_cost,
+        run_optimized_cost=run_record.optimized_cost,
     )
 
 

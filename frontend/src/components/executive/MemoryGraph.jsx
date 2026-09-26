@@ -1,29 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../../api";
 import { formatUsd } from "../../format";
-
-const RELATION_LABELS = {
-  REPLACED_BY: "replaced by",
-  SUPERSEDES: "supersedes",
-  DEPENDS_ON: "depends on",
-  CAUSED_BY: "caused by",
-  RELATED_TO: "related to",
-};
-
-function buildChains(nodes) {
-  const byId = Object.fromEntries(nodes.map((n) => [n.id, n]));
-  const heads = nodes.filter((n) => !n.superseded_by_memory_id);
-
-  return heads.map((head) => {
-    const lineage = [head];
-    let current = head;
-    while (current.supersedes_memory_id && byId[current.supersedes_memory_id]) {
-      current = byId[current.supersedes_memory_id];
-      lineage.push(current);
-    }
-    return lineage; // [newest, ..., oldest]
-  });
-}
+import { buildChains, edgeRelationLabel } from "../../graphUtils";
 
 export default function MemoryGraph({ agentId, avgSavingsPerRun, refreshSignal }) {
   const [nodes, setNodes] = useState([]);
@@ -65,11 +43,7 @@ export default function MemoryGraph({ agentId, avgSavingsPerRun, refreshSignal }
 
   const byId = Object.fromEntries(nodes.map((n) => [n.id, n]));
   const chains = buildChains(nodes);
-
-  function edgeBetween(oldId, newId) {
-    const edge = edges.find((e) => e.source_id === oldId && e.target_id === newId);
-    return edge ? RELATION_LABELS[edge.relation_type] || edge.relation_type.toLowerCase() : "replaced by";
-  }
+  const edgeBetween = (oldId, newId) => edgeRelationLabel(edges, oldId, newId);
 
   return (
     <div>

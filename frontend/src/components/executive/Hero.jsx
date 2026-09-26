@@ -12,9 +12,12 @@ export default function Hero({ summary, onOpenBreakdown }) {
       <h1 style={{ fontSize: "clamp(22px, 3vw, 30px)", margin: "6px 0 4px 0", fontWeight: 700 }}>
         Your AI agents don't need more context.
       </h1>
-      <h1 style={{ fontSize: "clamp(22px, 3vw, 30px)", margin: "0 0 22px 0", fontWeight: 700, color: "var(--text-dim)" }}>
+      <h1 style={{ fontSize: "clamp(22px, 3vw, 30px)", margin: "0 0 6px 0", fontWeight: 700, color: "var(--text-dim)" }}>
         They need better memory.
       </h1>
+      <p style={{ fontStyle: "italic", color: "var(--text-faint)", margin: "0 0 22px 0" }}>
+        Memory that knows what's still true.
+      </p>
 
       {!hasActivity && (
         <div className="hero-sub" style={{ marginBottom: 10 }}>

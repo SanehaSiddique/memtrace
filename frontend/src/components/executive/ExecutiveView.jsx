@@ -9,6 +9,7 @@ import BeforeAfter from "./BeforeAfter";
 import WhySavedDrawer from "./WhySavedDrawer";
 import MemoryEvolution from "./MemoryEvolution";
 import MemoryGraph from "./MemoryGraph";
+import LiveMemoryDemo from "./LiveMemoryDemo";
 import IncidentReplay from "./IncidentReplay";
 import AskBar from "./AskBar";
 import RecentActivity from "./RecentActivity";
@@ -67,8 +68,23 @@ export default function ExecutiveView({ refreshSignal }) {
 
       <div className="section">
         <div className="section-heading">
-          <h2>Ask your agent</h2>
-          <p>Runs the full MEMTRACE pipeline and records real savings below.</p>
+          <h2>Live memory graph</h2>
+          <p>Memory that knows what's still true — simulate a change, run a query, and watch the agent decide.</p>
+        </div>
+        <LiveMemoryDemo
+          agentId={DEFAULT_AGENT_ID}
+          conversationId={DEFAULT_CONVERSATION_ID}
+          onActivity={() => {
+            refresh();
+            setLocalSignal((n) => n + 1);
+          }}
+        />
+      </div>
+
+      <div className="section">
+        <div className="section-heading">
+          <h2>Ask about anything else</h2>
+          <p>The rest of the agent's memory — deployment, dependencies, rejected options.</p>
         </div>
         <div className="card">
           <AskBar onAsk={handleAsk} onTeach={handleTeach} busy={busy} />

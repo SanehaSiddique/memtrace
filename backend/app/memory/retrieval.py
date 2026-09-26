@@ -30,7 +30,7 @@ _HISTORY_INTENT_WORDS = {
     "past", "old", "former", "formerly", "prior",
 }
 _STOPWORDS = {
-    "what", "are", "we", "is", "the", "a", "an", "of", "to", "for", "in", "on",
+    "what", "which", "who", "are", "we", "is", "the", "a", "an", "of", "to", "for", "in", "on",
     "now", "did", "do", "does", "currently", "still", "this", "that", "it",
     "and", "or", "with", "our", "us", "was", "were", "have", "has", "had",
     "about", "any", "team",
@@ -99,7 +99,11 @@ async def retrieve_semantic(
             overlap = query_tokens & memory_tokens
             if not overlap:
                 continue
-            keyword_score = min(1.0, 0.3 + len(overlap) / max(len(memory_tokens), 1))
+            # Scored by absolute overlap, not overlap/len(memory_tokens): normalizing by
+            # memory length systematically favored short memories over longer, more
+            # specifically relevant ones whenever a query shared only generic terms
+            # (e.g. the subject name) with both — a real bug, not a style choice.
+            keyword_score = min(1.0, 0.2 + 0.15 * len(overlap))
             existing = candidates.get(memory.id)
             if existing is None:
                 candidates[memory.id] = ScoredMemory(
