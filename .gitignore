@@ -1,0 +1,24 @@
+# Environments
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Secrets (never commit real keys)
+.env
+
+# Databases
+*.db
+*.db-shm
+*.db-wal
+
+# Node / frontend build output
+node_modules/
+dist/
+.vite/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
