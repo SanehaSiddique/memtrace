@@ -12,7 +12,7 @@ from app.memory.models import ContextResult, ExcludedMemory, ScoredMemory
 DEFAULT_MAX_MEMORIES = 6
 
 
-def _estimate_tokens(text: str) -> int:
+def estimate_tokens(text: str) -> int:
     # ~4 chars/token is a reasonable heuristic without pulling in a tokenizer dependency.
     return max(1, len(text) // 4) if text else 0
 
@@ -54,5 +54,5 @@ def build_context(
         context_text=context_text,
         selected=kept,
         excluded=all_excluded,
-        token_estimate=_estimate_tokens(context_text),
+        token_estimate=estimate_tokens(context_text),
     )

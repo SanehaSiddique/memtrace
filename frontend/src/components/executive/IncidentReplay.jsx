@@ -1,0 +1,102 @@
+import { useEffect, useState } from "react";
+import { api } from "../../api";
+import { formatUsd } from "../../format";
+
+const CANDIDATE_QUERIES = [
+  "What deployment platform are we using now?",
+  "What authentication method are we using?",
+  "What database are we currently using?",
+];
+
+export default function IncidentReplay({ agentId, avgSavingsPerRun, refreshSignal }) {
+  const [state, setState] = useState({ loading: true, incident: null, history: [] });
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function find() {
+      setState({ loading: true, incident: null, history: [] });
+      for (const query of CANDIDATE_QUERIES) {
+        try {
+          const replay = await api.debugReplay(query, agentId);
+          const baselineTop = replay.baseline.retrieved[0]?.memory;
+          const activeSelected = replay.memtrace.selected.map((s) => s.memory).find((m) => m.status === "ACTIVE");
+          if (baselineTop && activeSelected && baselineTop.id !== activeSelected.id) {
+            const history = await api.getMemoryHistory(activeSelected.id);
+            if (cancelled) return;
+            setState({
+              loading: false,
+              incident: { query, baselineTop, activeSelected, answer: replay.memtrace.answer },
+              history,
+            });
+            return;
+          }
+        } catch {
+          // try the next candidate query
+        }
+      }
+      if (!cancelled) setState({ loading: false, incident: null, history: [] });
+    }
+
+    find();
+    return () => {
+      cancelled = true;
+    };
+  }, [agentId, refreshSignal]);
+
+  if (state.loading) return <div className="empty-note">Looking for a memory incident to replay…</div>;
+  if (!state.incident) {
+    return (
+      <div className="empty-note">
+        No stale-memory incident found in the current demo data — seed demo data first, then check back here.
+      </div>
+    );
+  }
+
+  const { baselineTop, answer } = state.incident;
+
+  return (
+    <div>
+      <div className="incident-quote">
+        <div style={{ fontSize: 12, color: "var(--text-dim)", marginBottom: 6 }}>Naive search-only agent answers:</div>
+        “The {baselineTop.subject} {baselineTop.predicate.replaceAll("_", " ")} {baselineTop.object}.”
+      </div>
+      <div className="incident-warning">⚠ OUTDATED MEMORY USED</div>
+
+      <div className="incident-timeline">
+        {[...state.history].reverse().map((m, i, arr) => (
+          <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div className="timeline-node">
+              {m.object}
+              <span className="date">{new Date(m.created_at).toLocaleDateString()}</span>
+            </div>
+            {i < arr.length - 1 && <span className="timeline-arrow">→</span>}
+          </div>
+        ))}
+      </div>
+
+      <h4 style={{ marginBottom: 4 }}>What went wrong?</h4>
+      <p style={{ color: "var(--text-dim)", fontSize: 14, marginTop: 0 }}>
+        A naive search-only approach retrieved an outdated memory ("{baselineTop.object}") instead of the current,
+        active decision.
+      </p>
+
+      <div className="incident-cost">
+        <div className="item">
+          <div className="label">Estimated wasted cost</div>
+          <div className="value">{formatUsd(avgSavingsPerRun || 0, { decimals: 4 })}</div>
+        </div>
+        <div className="item">
+          <div className="label">Fix</div>
+          <div className="value" style={{ color: "var(--green)" }}>
+            Memory already up to date
+          </div>
+        </div>
+      </div>
+
+      <div className="incident-quote fixed" style={{ marginTop: 18 }}>
+        <div style={{ fontSize: 12, color: "var(--text-dim)", marginBottom: 6 }}>MEMTRACE answers:</div>“{answer}”
+      </div>
+    </div>
+  );
+}

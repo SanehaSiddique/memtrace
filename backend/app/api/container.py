@@ -3,6 +3,8 @@ the two compiled LangGraph workflows. Built once at app startup."""
 
 from app.agent.workflow import build_ingest_workflow, build_query_workflow
 from app.config import Settings
+from app.cost.repository import SQLiteCostRepository
+from app.cost.service import CostService
 from app.judgment.factory import get_memory_judge
 from app.judgment.interface import BaseMemoryJudge
 from app.llm.factory import get_llm_client
@@ -21,6 +23,8 @@ class AppContainer:
         self.memory_service = MemoryService(self.repository, self.llm_client, self.judge, self.default_subject)
         self.ingest_workflow = build_ingest_workflow(self.repository, self.llm_client, self.judge, self.default_subject)
         self.query_workflow = build_query_workflow(self.repository, self.llm_client)
+        self.cost_service = CostService(SQLiteCostRepository(db_path=settings.memtrace_db_path))
 
     async def initialize(self) -> None:
         await self.repository.initialize()
+        await self.cost_service.initialize()

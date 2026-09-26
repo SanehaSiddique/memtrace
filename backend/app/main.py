@@ -13,7 +13,10 @@ from app.config import settings
 from app.tracing.langsmith import configure_langsmith
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_FRONTEND_DIR = _REPO_ROOT / "frontend"
+# The built React app (`npm run build` inside frontend/) lands in frontend/dist.
+# In development, run the Vite dev server separately (`npm run dev`) instead —
+# it proxies API calls back to this server (see frontend/vite.config.js).
+_FRONTEND_DIR = _REPO_ROOT / "frontend" / "dist"
 
 
 @asynccontextmanager
