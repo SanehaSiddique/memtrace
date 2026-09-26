@@ -33,6 +33,8 @@ export const api = {
   getMemoryGraphFull: (agentId) => request("/memory/graph-full", { params: { agent_id: agentId } }),
   getMemoryCostImpact: (memoryId) => request(`/memory/${memoryId}/cost-impact`),
 
+  ingest: (content, agentId, conversationId) =>
+    request("/memory/ingest", { method: "POST", body: { content, agent_id: agentId, conversation_id: conversationId } }),
   chat: (message, agentId, conversationId) =>
     request("/agent/chat", { method: "POST", body: { message, agent_id: agentId, conversation_id: conversationId } }),
   query: (query, agentId, conversationId) =>

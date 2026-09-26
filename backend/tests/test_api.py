@@ -60,6 +60,8 @@ def test_ingest_then_query_then_debug(client):
     debug_body = r7.json()
     assert "PostgreSQL" in debug_body["answer"]
     assert any(em["memory"]["object"] == "MongoDB" for em in debug_body["excluded"])
+    assert debug_body["run_savings"] > 0
+    assert debug_body["run_savings"] == pytest.approx(debug_body["run_baseline_cost"] - debug_body["run_optimized_cost"])
 
     r8 = client.post("/debug/replay", json={"query": "What database are we currently using?"})
     assert r8.status_code == 200

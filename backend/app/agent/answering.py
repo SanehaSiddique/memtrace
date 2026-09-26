@@ -30,4 +30,8 @@ def synthesize_offline_answer(selected: List[ScoredMemory]) -> str:
     if historical and historical[0].memory.id != top.memory.id:
         sentence += f" Previously it was {historical[0].memory.object}, since superseded."
 
+    rejected = next((s for s in selected if s.memory.predicate == "rejected" and s.memory.id != top.memory.id), None)
+    if rejected:
+        sentence += f" {rejected.memory.object} was considered and rejected."
+
     return sentence

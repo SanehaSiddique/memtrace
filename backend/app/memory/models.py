@@ -176,3 +176,6 @@ class DebugQueryResult(BaseModel):
     context: ContextResult
     langsmith_run_id: Optional[str] = None
     trace_metadata: Dict[str, Any] = Field(default_factory=dict)
+    run_savings: float = 0.0
+    run_baseline_cost: float = 0.0
+    run_optimized_cost: float = 0.0
