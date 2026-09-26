@@ -7,6 +7,8 @@ from fastapi import APIRouter, HTTPException, Request
 
 from app.api.container import AppContainer
 from app.api.schemas import ChatRequest, IngestRequest, QueryRequest, resolve_agent_id
+from app.cost.models import ScaleProjectionRequest
+from app.cost.service import project_scale
 from app.demo.seed import seed_demo_data
 from app.evaluation.dataset import EVAL_CASES
 from app.evaluation.runner import run_evaluation
@@ -82,12 +84,24 @@ async def chat(body: ChatRequest, request: Request):
         }
     )
 
+    run_record = await container.cost_service.record_run(
+        agent_id=agent_id,
+        conversation_id=body.conversation_id,
+        query=body.message,
+        model=container.settings.openai_model,
+        retrieved=query_result["retrieved_memories"],
+        selected=query_result["selected_memories"],
+        excluded=query_result["excluded_memories"],
+        answer=query_result["answer"],
+    )
+
     return {
         "answer": query_result["answer"],
         "memory_operations": [op.model_dump(mode="json") for op in ingest_result["operations"]],
         "selected_memories": [sm.model_dump(mode="json") for sm in query_result["selected_memories"]],
         "excluded_memories": [em.model_dump(mode="json") for em in query_result["excluded_memories"]],
         "trace_metadata": query_result["trace_metadata"],
+        "run_savings": run_record.savings,
     }
 
 
@@ -104,12 +118,25 @@ async def query_memory(body: QueryRequest, request: Request):
             "recent_messages": body.recent_messages,
         }
     )
+
+    run_record = await container.cost_service.record_run(
+        agent_id=agent_id,
+        conversation_id=body.conversation_id,
+        query=body.query,
+        model=container.settings.openai_model,
+        retrieved=result["retrieved_memories"],
+        selected=result["selected_memories"],
+        excluded=result["excluded_memories"],
+        answer=result["answer"],
+    )
+
     return {
         "answer": result["answer"],
         "selected_memories": [sm.model_dump(mode="json") for sm in result["selected_memories"]],
         "excluded_memories": [em.model_dump(mode="json") for em in result["excluded_memories"]],
         "context": result["context"].model_dump(mode="json"),
         "trace_metadata": result["trace_metadata"],
+        "run_savings": run_record.savings,
     }
 
 
@@ -186,6 +213,18 @@ async def debug_query(body: QueryRequest, request: Request):
     memory_ids = [sm.memory.id for sm in result["selected_memories"]]
     graph_paths = await _graph_paths_for(container.repository, memory_ids)
 
+    await container.cost_service.record_run(
+        agent_id=agent_id,
+        conversation_id=body.conversation_id,
+        query=body.query,
+        model=container.settings.openai_model,
+        retrieved=result["retrieved_memories"],
+        selected=result["selected_memories"],
+        excluded=result["excluded_memories"],
+        answer=result["answer"],
+        langsmith_run_id=str(run_tree.id) if run_tree else None,
+    )
+
     return DebugQueryResult(
         query=body.query,
         conversation_id=body.conversation_id,
@@ -239,3 +278,42 @@ async def evaluate(request: Request):
     agent_id = container.settings.memtrace_default_agent_id
     report = await run_evaluation(container.repository, container.llm_client, agent_id, EVAL_CASES)
     return report.model_dump(mode="json")
+
+
+# ---------------------------------------------------------------------------
+# Executive dashboard: cost/savings endpoints
+# ---------------------------------------------------------------------------
+
+
+@router.get("/cost/summary")
+async def cost_summary(request: Request, agent_id: Optional[str] = None):
+    container = _container(request)
+    summary = await container.cost_service.summary(resolve_agent_id(agent_id))
+    return summary.model_dump(mode="json")
+
+
+@router.get("/cost/timeseries")
+async def cost_timeseries(request: Request, agent_id: Optional[str] = None):
+    container = _container(request)
+    points = await container.cost_service.timeseries(resolve_agent_id(agent_id))
+    return [p.model_dump(mode="json") for p in points]
+
+
+@router.get("/cost/leaks")
+async def cost_leaks(request: Request, agent_id: Optional[str] = None):
+    container = _container(request)
+    items = await container.cost_service.leak_breakdown(resolve_agent_id(agent_id))
+    return [i.model_dump(mode="json") for i in items]
+
+
+@router.get("/cost/runs")
+async def cost_runs(request: Request, agent_id: Optional[str] = None, limit: int = 20):
+    container = _container(request)
+    runs = await container.cost_service.recent_runs(resolve_agent_id(agent_id), limit=limit)
+    return [r.model_dump(mode="json") for r in runs]
+
+
+@router.post("/cost/scale-projection")
+async def cost_scale_projection(body: ScaleProjectionRequest):
+    projection = project_scale(body.agents, body.runs_per_agent_per_day, body.cost_per_run, body.avoidable_pct)
+    return projection.model_dump(mode="json")

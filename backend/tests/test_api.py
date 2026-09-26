@@ -81,3 +81,28 @@ def test_evaluate_endpoint(client):
     body = response.json()
     assert "memtrace_accuracy" in body
     assert len(body["cases"]) == 10
+
+
+def test_cost_endpoints_reflect_recorded_runs(client):
+    client.post("/demo/seed")
+    client.post("/memory/query", json={"query": "What database are we currently using?"})
+
+    summary = client.get("/cost/summary").json()
+    assert summary["total_runs"] == 1
+    assert summary["lifetime_savings"] > 0
+    assert "not live provider billing data" in summary["data_source_note"]
+
+    timeseries = client.get("/cost/timeseries").json()
+    assert len(timeseries) == 1
+
+    leaks = client.get("/cost/leaks").json()
+    assert leaks[0]["category"] == "outdated_information"
+
+    runs = client.get("/cost/runs").json()
+    assert len(runs) == 1
+
+    projection = client.post(
+        "/cost/scale-projection",
+        json={"agents": 1000, "runs_per_agent_per_day": 500, "cost_per_run": 0.08, "avoidable_pct": 22},
+    ).json()
+    assert projection["annual_savings"] == pytest.approx(1000 * 500 * 0.08 * 0.22 * 365)
