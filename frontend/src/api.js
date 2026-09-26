@@ -29,6 +29,9 @@ export const api = {
   listMemory: (agentId, status) => request("/memory", { params: { agent_id: agentId, status } }),
   getMemoryGraph: (memoryId) => request(`/memory/${memoryId}/graph`),
   getMemoryHistory: (memoryId) => request(`/memory/${memoryId}/history`),
+  getMemoryTimeline: (agentId) => request("/memory/timeline", { params: { agent_id: agentId } }),
+  getMemoryGraphFull: (agentId) => request("/memory/graph-full", { params: { agent_id: agentId } }),
+  getMemoryCostImpact: (memoryId) => request(`/memory/${memoryId}/cost-impact`),
 
   chat: (message, agentId, conversationId) =>
     request("/agent/chat", { method: "POST", body: { message, agent_id: agentId, conversation_id: conversationId } }),
@@ -42,10 +45,12 @@ export const api = {
   evaluate: () => request("/evaluate", { method: "POST" }),
 
   costSummary: (agentId) => request("/cost/summary", { params: { agent_id: agentId } }),
-  costTimeseries: (agentId) => request("/cost/timeseries", { params: { agent_id: agentId } }),
+  costTimeseries: (agentId, granularity = "day") =>
+    request("/cost/timeseries", { params: { agent_id: agentId, granularity } }),
   costLeaks: (agentId) => request("/cost/leaks", { params: { agent_id: agentId } }),
   costRuns: (agentId, limit = 20) => request("/cost/runs", { params: { agent_id: agentId, limit } }),
   scaleProjection: (body) => request("/cost/scale-projection", { method: "POST", body }),
+  memoryRoi: (agentId) => request("/cost/memory-roi", { params: { agent_id: agentId } }),
 };
 
 export const DEFAULT_AGENT_ID = "agent-alpha";

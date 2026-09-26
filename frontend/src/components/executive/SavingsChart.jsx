@@ -1,9 +1,38 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { api } from "../../api";
 import { formatUsd } from "../../format";
 
-export default function SavingsChart({ points }) {
+const GRANULARITIES = [
+  { key: "day", label: "Daily" },
+  { key: "week", label: "Weekly" },
+  { key: "month", label: "Monthly" },
+  { key: "year", label: "Annual" },
+];
+
+export default function SavingsChart({ agentId, refreshSignal }) {
+  const [granularity, setGranularity] = useState("day");
+  const [points, setPoints] = useState([]);
   const [hover, setHover] = useState(null);
 
+  useEffect(() => {
+    api.costTimeseries(agentId, granularity).then(setPoints).catch(() => setPoints([]));
+  }, [agentId, granularity, refreshSignal]);
+
+  return (
+    <div>
+      <div className="tabs" style={{ marginBottom: 14 }}>
+        {GRANULARITIES.map((g) => (
+          <button key={g.key} className={g.key === granularity ? "active" : ""} onClick={() => setGranularity(g.key)}>
+            {g.label}
+          </button>
+        ))}
+      </div>
+      <Chart points={points} hover={hover} setHover={setHover} />
+    </div>
+  );
+}
+
+function Chart({ points, hover, setHover }) {
   if (!points || points.length === 0) {
     return <div className="empty-note">No savings history yet — ask a few questions to start the curve.</div>;
   }
@@ -47,8 +76,8 @@ export default function SavingsChart({ points }) {
       </svg>
       <div className="chart-caption">
         {hover !== null
-          ? `${points[hover].date}: ${formatUsd(points[hover].cumulative_savings)} cumulative (${formatUsd(points[hover].daily_savings)} that day)`
-          : `Latest: ${formatUsd(points[points.length - 1].cumulative_savings)} saved across ${points.length} day(s) of activity`}
+          ? `${points[hover].date}: ${formatUsd(points[hover].cumulative_savings)} cumulative (${formatUsd(points[hover].daily_savings)} that period)`
+          : `Latest: ${formatUsd(points[points.length - 1].cumulative_savings)} saved across ${points.length} period(s) of activity`}
       </div>
       <p className="card-note">
         Every avoided piece of unnecessary context compounds across every agent, every conversation, every day.

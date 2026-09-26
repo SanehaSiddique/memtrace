@@ -1,19 +1,22 @@
-"""Persists RunRecord rows — one per answered query — so the executive
-dashboard has real recorded activity to aggregate instead of hardcoded numbers."""
+"""Persists RunRecord rows — one per answered query — and MemoryCostImpact
+rows — one per individual memory decision's estimated dollar effect — so the
+executive dashboard has real recorded activity to aggregate instead of
+hardcoded numbers."""
 
-import json
 from datetime import datetime
 from typing import List, Optional
 
 import aiosqlite
 
-from app.cost.models import RunRecord
+from app.cost.models import MemoryCostImpact, RunRecord
 
 _COLUMNS = """
     id, agent_id, conversation_id, query, model, baseline_tokens, optimized_tokens,
     output_tokens, baseline_cost, optimized_cost, savings, leak_category,
     langsmith_run_id, created_at
 """
+
+_IMPACT_COLUMNS = "id, agent_id, memory_id, operation, run_id, cost_avoided, reason, created_at"
 
 
 class SQLiteCostRepository:
@@ -41,6 +44,21 @@ class SQLiteCostRepository:
                 );
             """)
             await db.execute("CREATE INDEX IF NOT EXISTS idx_run_costs_agent ON run_costs(agent_id);")
+
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS memory_cost_impacts (
+                    id TEXT PRIMARY KEY,
+                    agent_id TEXT NOT NULL,
+                    memory_id TEXT NOT NULL,
+                    operation TEXT NOT NULL,
+                    run_id TEXT,
+                    cost_avoided REAL NOT NULL,
+                    reason TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+            """)
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_memory_impacts_agent ON memory_cost_impacts(agent_id);")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_memory_impacts_memory ON memory_cost_impacts(memory_id);")
             await db.commit()
 
     def _row_to_record(self, row: tuple) -> RunRecord:
@@ -102,3 +120,53 @@ class SQLiteCostRepository:
             ) as cursor:
                 rows = await cursor.fetchall()
                 return [self._row_to_record(r) for r in rows]
+
+    # -- memory cost impacts --------------------------------------------------
+
+    def _row_to_impact(self, row: tuple) -> MemoryCostImpact:
+        return MemoryCostImpact(
+            id=row[0],
+            agent_id=row[1],
+            memory_id=row[2],
+            operation=row[3],
+            run_id=row[4],
+            cost_avoided=row[5],
+            reason=row[6],
+            created_at=datetime.fromisoformat(row[7]),
+        )
+
+    async def record_impact(self, impact: MemoryCostImpact) -> MemoryCostImpact:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                f"INSERT INTO memory_cost_impacts ({_IMPACT_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    impact.id,
+                    impact.agent_id,
+                    impact.memory_id,
+                    impact.operation,
+                    impact.run_id,
+                    impact.cost_avoided,
+                    impact.reason,
+                    impact.created_at.isoformat(),
+                ),
+            )
+            await db.commit()
+        return impact
+
+    async def list_impacts(self, agent_id: str, limit: int = 100000) -> List[MemoryCostImpact]:
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                f"SELECT {_IMPACT_COLUMNS} FROM memory_cost_impacts WHERE agent_id = ? ORDER BY created_at ASC LIMIT ?",
+                (agent_id, limit),
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return [self._row_to_impact(r) for r in rows]
+
+    async def list_impacts_for_memory(self, memory_id: str) -> List[MemoryCostImpact]:
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                f"SELECT {_IMPACT_COLUMNS} FROM memory_cost_impacts WHERE memory_id = ? ORDER BY created_at ASC",
+                (memory_id,),
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return [self._row_to_impact(r) for r in rows]

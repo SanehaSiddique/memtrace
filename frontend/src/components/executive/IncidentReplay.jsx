@@ -10,12 +10,14 @@ const CANDIDATE_QUERIES = [
 
 export default function IncidentReplay({ agentId, avgSavingsPerRun, refreshSignal }) {
   const [state, setState] = useState({ loading: true, incident: null, history: [] });
+  const [fixed, setFixed] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
 
     async function find() {
       setState({ loading: true, incident: null, history: [] });
+      setFixed(false);
       for (const query of CANDIDATE_QUERIES) {
         try {
           const replay = await api.debugReplay(query, agentId);
@@ -57,28 +59,32 @@ export default function IncidentReplay({ agentId, avgSavingsPerRun, refreshSigna
 
   return (
     <div>
+      <div style={{ fontSize: 12, color: "var(--text-dim)", marginBottom: 6 }}>Question</div>
+      <div className="incident-quote" style={{ borderLeft: "3px solid var(--border)" }}>"{state.incident.query}"</div>
+
+      <div style={{ fontSize: 12, color: "var(--text-dim)", marginBottom: 6 }}>Agent answer (naive search)</div>
       <div className="incident-quote">
-        <div style={{ fontSize: 12, color: "var(--text-dim)", marginBottom: 6 }}>Naive search-only agent answers:</div>
         “The {baselineTop.subject} {baselineTop.predicate.replaceAll("_", " ")} {baselineTop.object}.”
       </div>
-      <div className="incident-warning">⚠ OUTDATED MEMORY USED</div>
+      <div className="incident-warning">⚠ OUTDATED MEMORY DETECTED</div>
 
       <div className="incident-timeline">
         {[...state.history].reverse().map((m, i, arr) => (
           <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <div className="timeline-node">
               {m.object}
-              <span className="date">{new Date(m.created_at).toLocaleDateString()}</span>
+              <span className="date">
+                {new Date(m.created_at).toLocaleDateString()} · {m.status}
+              </span>
             </div>
-            {i < arr.length - 1 && <span className="timeline-arrow">→</span>}
+            {i < arr.length - 1 && <span className="timeline-arrow">→ replaced by</span>}
           </div>
         ))}
       </div>
 
-      <h4 style={{ marginBottom: 4 }}>What went wrong?</h4>
+      <h4 style={{ marginBottom: 4 }}>Why it failed</h4>
       <p style={{ color: "var(--text-dim)", fontSize: 14, marginTop: 0 }}>
-        A naive search-only approach retrieved an outdated memory ("{baselineTop.object}") instead of the current,
-        active decision.
+        The agent retrieved a historical memory ("{baselineTop.object}") instead of the current, active decision.
       </p>
 
       <div className="incident-cost">
@@ -86,17 +92,22 @@ export default function IncidentReplay({ agentId, avgSavingsPerRun, refreshSigna
           <div className="label">Estimated wasted cost</div>
           <div className="value">{formatUsd(avgSavingsPerRun || 0, { decimals: 4 })}</div>
         </div>
-        <div className="item">
-          <div className="label">Fix</div>
-          <div className="value" style={{ color: "var(--green)" }}>
-            Memory already up to date
-          </div>
-        </div>
       </div>
 
-      <div className="incident-quote fixed" style={{ marginTop: 18 }}>
-        <div style={{ fontSize: 12, color: "var(--text-dim)", marginBottom: 6 }}>MEMTRACE answers:</div>“{answer}”
-      </div>
+      {!fixed ? (
+        <button className="btn btn-primary" style={{ marginTop: 18 }} onClick={() => setFixed(true)}>
+          Fix memory &amp; replay
+        </button>
+      ) : (
+        <>
+          <div className="kv-row" style={{ marginTop: 18 }}>
+            <span className="k">Fix</span>
+            <span style={{ color: "var(--green)", fontWeight: 700 }}>Memory already up to date</span>
+          </div>
+          <div style={{ fontSize: 12, color: "var(--text-dim)", margin: "14px 0 6px 0" }}>MEMTRACE answers</div>
+          <div className="incident-quote fixed">“{answer}”</div>
+        </>
+      )}
     </div>
   );
 }

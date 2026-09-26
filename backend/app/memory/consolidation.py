@@ -6,7 +6,6 @@ it to the new one with SUPERSEDES/REPLACED_BY edges instead of mutating the
 old row's content.
 """
 
-from datetime import datetime, timezone
 from typing import List, Optional
 
 from app.llm.interface import BaseLLMClient
@@ -47,7 +46,10 @@ async def apply_operation(
     candidate: CandidateMemory,
     event: MemoryEvent,
 ) -> MemoryOperationRecord:
-    now = datetime.now(timezone.utc)
+    # Use the event's own timestamp, not wall-clock time, so a memory's created_at/
+    # valid_from/valid_until reflect when the underlying event happened — this matters
+    # for backdated/simulated events (e.g. the demo story) as much as live ones.
+    now = event.timestamp
 
     if judgment.operation == MemoryOperationType.NOOP:
         return MemoryOperationRecord(
@@ -126,6 +128,7 @@ async def apply_operation(
         content=judgment.content,
         confidence=judgment.confidence,
         status=MemoryStatus.PENDING_REVIEW if judgment.operation == MemoryOperationType.REVIEW else _initial_status(judgment.memory_type, judgment.confidence),
+        created_at=now,
         valid_from=now,
         source_event_id=event.event_id,
         provenance={

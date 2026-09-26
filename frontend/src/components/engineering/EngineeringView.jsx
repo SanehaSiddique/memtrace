@@ -52,8 +52,25 @@ export default function EngineeringView() {
               </span>
             </div>
             <div className="kv-row">
-              <span className="k">LangSmith run ID</span>
-              <span className="mono">{result.langsmith_run_id ?? "tracing disabled (no LANGCHAIN_API_KEY configured)"}</span>
+              <span className="k">LangSmith trace</span>
+              {result.langsmith_run_id ? (
+                <span>
+                  <span className="mono" style={{ marginRight: 10 }}>
+                    {result.langsmith_run_id}
+                  </span>
+                  <a
+                    className="btn btn-ghost"
+                    style={{ padding: "2px 10px", fontSize: 12 }}
+                    href="https://smith.langchain.com/"
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    View trace ↗
+                  </a>
+                </span>
+              ) : (
+                <span className="mono">tracing disabled (no LANGCHAIN_API_KEY configured)</span>
+              )}
             </div>
             <div className="kv-row">
               <span className="k">Candidates retrieved / selected / excluded</span>

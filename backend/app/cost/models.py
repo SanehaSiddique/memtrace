@@ -14,6 +14,19 @@ LEAK_LABELS = {
     "irrelevant_context": "Irrelevant information",
 }
 
+# Categories a memory decision can be attributed to on the Memory ROI table.
+# The first four map directly to the product's four example rows; the fifth
+# ("unverified_information") is a real, distinct category our pipeline
+# produces (a PENDING_REVIEW memory retrieved then held back) and is shown
+# alongside them rather than force-merged into an inexact bucket.
+MEMORY_ROI_LABELS = {
+    "outdated_information": "Removed stale context",
+    "deduplicated_memory": "Deduplicated memory",
+    "irrelevant_context": "Excluded irrelevant memory",
+    "archived_obsolete": "Archived obsolete memory",
+    "unverified_information": "Unverified information held back",
+}
+
 
 class RunRecord(BaseModel):
     id: str = Field(default_factory=lambda: f"run_{uuid.uuid4().hex[:10]}")
@@ -46,6 +59,7 @@ class CostSummary(BaseModel):
     savings_last_month: float
     savings_change_vs_last_month: float
     projected_annual_savings: float
+    memory_driven_savings: float
     total_cost_without_memtrace: float
     total_cost_with_memtrace: float
     avg_savings_per_run: float
@@ -57,6 +71,33 @@ class TimeseriesPoint(BaseModel):
     date: str
     daily_savings: float
     cumulative_savings: float
+
+
+class MemoryCostImpact(BaseModel):
+    """One memory decision's estimated dollar effect — the atomic unit the
+    Memory ROI table and per-memory 'cost impact' displays are built from."""
+
+    id: str = Field(default_factory=lambda: f"mci_{uuid.uuid4().hex[:10]}")
+    agent_id: str
+    memory_id: str
+    operation: str  # a MEMORY_ROI_LABELS key
+    run_id: Optional[str] = None
+    cost_avoided: float
+    reason: str = ""
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class MemoryRoiRow(BaseModel):
+    operation: str
+    label: str
+    event_count: int
+    cost_avoided: float
+
+
+class MemoryRoiSummary(BaseModel):
+    rows: List[MemoryRoiRow]
+    total_cost_avoided: float
+    data_source_note: str
 
 
 class ScaleProjection(BaseModel):
@@ -84,6 +125,7 @@ def empty_summary(note: str) -> CostSummary:
         savings_last_month=0.0,
         savings_change_vs_last_month=0.0,
         projected_annual_savings=0.0,
+        memory_driven_savings=0.0,
         total_cost_without_memtrace=0.0,
         total_cost_with_memtrace=0.0,
         avg_savings_per_run=0.0,
