@@ -106,3 +106,41 @@ def test_cost_endpoints_reflect_recorded_runs(client):
         json={"agents": 1000, "runs_per_agent_per_day": 500, "cost_per_run": 0.08, "avoidable_pct": 22},
     ).json()
     assert projection["annual_savings"] == pytest.approx(1000 * 500 * 0.08 * 0.22 * 365)
+
+    roi = client.get("/cost/memory-roi").json()
+    stale_row = next(r for r in roi["rows"] if r["operation"] == "outdated_information")
+    assert stale_row["event_count"] == 1
+    assert roi["total_cost_avoided"] > 0
+
+    summary_after = client.get("/cost/summary").json()
+    assert summary_after["memory_driven_savings"] == pytest.approx(roi["total_cost_avoided"])
+
+    monthly_timeseries = client.get("/cost/timeseries", params={"granularity": "month"}).json()
+    assert len(monthly_timeseries) == 1
+
+
+def test_memory_timeline_and_graph_full_endpoints(client):
+    client.post("/memory/ingest", json={"content": "Project Alpha uses MongoDB."})
+    client.post(
+        "/memory/ingest",
+        json={"content": "We migrated from MongoDB to PostgreSQL because relational querying became important."},
+    )
+
+    timeline = client.get("/memory/timeline").json()
+    assert len(timeline) == 2
+    assert timeline[0]["object"] == "MongoDB"  # oldest first
+    assert timeline[1]["object"] == "PostgreSQL"
+
+    graph = client.get("/memory/graph-full").json()
+    assert len(graph["nodes"]) == 2
+    assert len(graph["edges"]) >= 2  # CAUSED_BY x2 + REPLACED_BY/SUPERSEDES
+
+    postgres_id = timeline[1]["id"]
+    cost_impact = client.get(f"/memory/{postgres_id}/cost-impact").json()
+    assert cost_impact["memory_id"] == postgres_id
+    assert cost_impact["cost_avoided"] == 0  # nothing has excluded it yet
+
+    mongo_id = timeline[0]["id"]
+    client.post("/memory/query", json={"query": "What database are we currently using?"})
+    mongo_impact = client.get(f"/memory/{mongo_id}/cost-impact").json()
+    assert mongo_impact["cost_avoided"] > 0  # MongoDB gets excluded once queried

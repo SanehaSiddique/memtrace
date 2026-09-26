@@ -21,7 +21,18 @@ export default function BeforeAfter({ summary }) {
             <div className="ba-bar" style={{ width: "58%" }} />
             <div className="ba-bar" style={{ width: "34%" }} />
           </div>
-          <div className="ba-cost">💸 {formatUsd(avgWithout, { decimals: 4 })} / run</div>
+          <div className="kv-row">
+            <span className="k">Agent receives</span>
+            <span>old + new + irrelevant information</span>
+          </div>
+          <div className="kv-row">
+            <span className="k">Estimated cost</span>
+            <span style={{ color: "var(--red)", fontWeight: 700 }}>{formatUsd(avgWithout, { decimals: 4 })}</span>
+          </div>
+          <div className="kv-row">
+            <span className="k">Risk</span>
+            <span>outdated information included</span>
+          </div>
         </div>
         <div className="ba-col with">
           <div className="ba-title">With MEMTRACE</div>
@@ -29,7 +40,18 @@ export default function BeforeAfter({ summary }) {
             <div className="ba-bar" style={{ width: "42%" }} />
             <div className="ba-bar" style={{ width: "18%" }} />
           </div>
-          <div className="ba-cost">💰 {formatUsd(avgWith, { decimals: 4 })} / run</div>
+          <div className="kv-row">
+            <span className="k">Agent receives</span>
+            <span>current + relevant information</span>
+          </div>
+          <div className="kv-row">
+            <span className="k">Estimated cost</span>
+            <span style={{ color: "var(--green)", fontWeight: 700 }}>{formatUsd(avgWith, { decimals: 4 })}</span>
+          </div>
+          <div className="kv-row">
+            <span className="k">Avoided</span>
+            <span style={{ color: "var(--green)", fontWeight: 700 }}>{formatUsd(avgSaved, { decimals: 4 })}</span>
+          </div>
         </div>
       </div>
 

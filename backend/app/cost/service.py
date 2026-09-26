@@ -8,14 +8,18 @@ must be labeled as such, not presented as verified production billing.
 """
 
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import List, Optional
 
 from app.context.builder import estimate_tokens
 from app.cost.models import (
     LEAK_LABELS,
+    MEMORY_ROI_LABELS,
     CostSummary,
     LeakBreakdownItem,
+    MemoryCostImpact,
+    MemoryRoiRow,
+    MemoryRoiSummary,
     RunRecord,
     ScaleProjection,
     TimeseriesPoint,
@@ -45,6 +49,19 @@ def _dominant_leak_category(excluded: List[ExcludedMemory]) -> str:
         category = _categorize_excluded_reason(item.reason)
         counts[category] = counts.get(category, 0) + 1
     return max(counts, key=counts.get)
+
+
+def _bucket_key_fn(granularity: str):
+    """Returns a function truncating a date to the requested bucket, as an ISO
+    label: a day as-is, a week as its Monday, a month as its 1st, a year as
+    its Jan 1st."""
+    if granularity == "week":
+        return lambda d: (d - timedelta(days=d.weekday())).isoformat()
+    if granularity == "month":
+        return lambda d: date(d.year, d.month, 1).isoformat()
+    if granularity == "year":
+        return lambda d: date(d.year, 1, 1).isoformat()
+    return lambda d: d.isoformat()
 
 
 class CostService:
@@ -95,12 +112,66 @@ class CostService:
             leak_category=_dominant_leak_category(excluded),
             langsmith_run_id=langsmith_run_id,
         )
-        return await self.repository.record(record)
+        await self.repository.record(record)
+
+        # Attribute cost to the individual memory decisions that made up this
+        # run's savings — this is what the Memory ROI table and per-memory
+        # "cost impact" displays are built from, independent of (and more
+        # granular than) the single aggregate `savings` figure above.
+        for item in excluded:
+            memory_cost = (estimate_tokens(item.memory.content) / 1000) * pricing.input_per_1k
+            await self.repository.record_impact(
+                MemoryCostImpact(
+                    agent_id=agent_id,
+                    memory_id=item.memory.id,
+                    operation=_categorize_excluded_reason(item.reason),
+                    run_id=record.id,
+                    cost_avoided=memory_cost,
+                    reason=item.reason,
+                )
+            )
+
+        return record
+
+    async def record_lifecycle_impact(
+        self,
+        agent_id: str,
+        operation: str,
+        memory_id: str,
+        content: str,
+        reason: str,
+        model: str,
+    ) -> Optional[MemoryCostImpact]:
+        """Attribute cost avoided to a MERGE/ARCHIVE/DELETE lifecycle decision made
+        at ingestion time — e.g. a MERGE means a duplicate memory (and every future
+        run that would have retrieved it) never needed to exist at all."""
+        category = {"MERGE": "deduplicated_memory", "ARCHIVE": "archived_obsolete", "DELETE": "archived_obsolete"}.get(
+            operation
+        )
+        if category is None:
+            return None
+
+        pricing = get_pricing(model)
+        cost_avoided = (estimate_tokens(content) / 1000) * pricing.input_per_1k
+        impact = MemoryCostImpact(
+            agent_id=agent_id,
+            memory_id=memory_id,
+            operation=category,
+            run_id=None,
+            cost_avoided=cost_avoided,
+            reason=reason,
+        )
+        return await self.repository.record_impact(impact)
 
     async def summary(self, agent_id: str) -> CostSummary:
         runs = await self.repository.list_all(agent_id)
+        impacts = await self.repository.list_impacts(agent_id)
+        memory_driven_savings = sum(i.cost_avoided for i in impacts)
+
         if not runs:
-            return empty_summary("No runs recorded yet — seed demo data or ask a question to generate activity.")
+            summary = empty_summary("No runs recorded yet — seed demo data or ask a question to generate activity.")
+            summary.memory_driven_savings = memory_driven_savings
+            return summary
 
         now = datetime.now(timezone.utc)
         lifetime_savings = sum(r.savings for r in runs)
@@ -127,6 +198,7 @@ class CostService:
             savings_last_month=savings_last_month,
             savings_change_vs_last_month=savings_this_month - savings_last_month,
             projected_annual_savings=projected_annual,
+            memory_driven_savings=memory_driven_savings,
             total_cost_without_memtrace=total_without,
             total_cost_with_memtrace=total_with,
             avg_savings_per_run=lifetime_savings / len(runs),
@@ -137,20 +209,21 @@ class CostService:
             ),
         )
 
-    async def timeseries(self, agent_id: str) -> List[TimeseriesPoint]:
+    async def timeseries(self, agent_id: str, granularity: str = "day") -> List[TimeseriesPoint]:
         runs = await self.repository.list_all(agent_id)
         if not runs:
             return []
 
-        by_day: dict = defaultdict(float)
+        bucket = _bucket_key_fn(granularity)
+        by_bucket: dict = defaultdict(float)
         for run in runs:
-            by_day[run.created_at.date().isoformat()] += run.savings
+            by_bucket[bucket(run.created_at.date())] += run.savings
 
         points: List[TimeseriesPoint] = []
         cumulative = 0.0
-        for date in sorted(by_day.keys()):
-            cumulative += by_day[date]
-            points.append(TimeseriesPoint(date=date, daily_savings=by_day[date], cumulative_savings=cumulative))
+        for key in sorted(by_bucket.keys()):
+            cumulative += by_bucket[key]
+            points.append(TimeseriesPoint(date=key, daily_savings=by_bucket[key], cumulative_savings=cumulative))
         return points
 
     async def leak_breakdown(self, agent_id: str) -> List[LeakBreakdownItem]:
@@ -178,6 +251,41 @@ class CostService:
 
     async def recent_runs(self, agent_id: str, limit: int = 20) -> List[RunRecord]:
         return await self.repository.list_recent(agent_id, limit)
+
+    async def memory_roi_summary(self, agent_id: str) -> MemoryRoiSummary:
+        """Connects memory lifecycle decisions directly to AI cost savings —
+        "which memory decisions are saving us money?" """
+        impacts = await self.repository.list_impacts(agent_id)
+
+        totals: dict = defaultdict(float)
+        counts: dict = defaultdict(int)
+        for impact in impacts:
+            totals[impact.operation] += impact.cost_avoided
+            counts[impact.operation] += 1
+
+        rows = [
+            MemoryRoiRow(
+                operation=category,
+                label=label,
+                event_count=counts.get(category, 0),
+                cost_avoided=totals.get(category, 0.0),
+            )
+            for category, label in MEMORY_ROI_LABELS.items()
+        ]
+        rows.sort(key=lambda r: r.cost_avoided, reverse=True)
+
+        return MemoryRoiSummary(
+            rows=rows,
+            total_cost_avoided=sum(totals.values()),
+            data_source_note=(
+                f"Calculated from {len(impacts)} recorded memory decision(s) and configured model pricing "
+                "— demo data, not live provider billing."
+            ),
+        )
+
+    async def cost_impact_for_memory(self, memory_id: str) -> float:
+        impacts = await self.repository.list_impacts_for_memory(memory_id)
+        return sum(i.cost_avoided for i in impacts)
 
 
 def project_scale(agents: int, runs_per_agent_per_day: int, cost_per_run: float, avoidable_pct: float) -> ScaleProjection:

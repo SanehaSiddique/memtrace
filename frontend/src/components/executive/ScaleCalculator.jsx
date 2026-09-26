@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../../api";
-import { formatUsd } from "../../format";
+import { formatCompactUsd, formatUsd } from "../../format";
+import MetricBadge from "../shared/MetricBadge";
 
 export default function ScaleCalculator() {
   const [agents, setAgents] = useState(100);
@@ -25,7 +26,18 @@ export default function ScaleCalculator() {
   }, [agents, runsPerDay, costPerRun, avoidable]);
 
   return (
-    <div className="calc-grid">
+    <div>
+      <div style={{ textAlign: "center", marginBottom: 28 }}>
+        <div className="hero-eyebrow">
+          At {Number(agents).toLocaleString()} agents × {Number(runsPerDay).toLocaleString()} runs/day
+          <MetricBadge kind="PROJECTED" />
+        </div>
+        <div className="hero-figure" style={{ fontSize: "clamp(32px, 5vw, 48px)" }}>
+          {projection ? formatCompactUsd(projection.monthly_savings) : "—"}
+        </div>
+        <div className="hero-sub">saved per month, at this scale</div>
+      </div>
+      <div className="calc-grid">
       <div>
         <div className="calc-field">
           <label>
@@ -73,6 +85,7 @@ export default function ScaleCalculator() {
           <span className="label">Annual savings</span>
           <span className="value">{projection ? formatUsd(projection.annual_savings, { decimals: 0 }) : "—"}</span>
         </div>
+      </div>
       </div>
     </div>
   );

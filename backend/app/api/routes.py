@@ -12,7 +12,7 @@ from app.cost.service import project_scale
 from app.demo.seed import seed_demo_data
 from app.evaluation.dataset import EVAL_CASES
 from app.evaluation.runner import run_evaluation
-from app.memory.models import DebugQueryResult, GraphPathStep, MemoryEvent, MemoryStatus
+from app.memory.models import DebugQueryResult, GraphPathStep, MemoryEvent, MemoryOperationRecord, MemoryStatus
 from app.memory.retrieval import baseline_semantic_retrieve, hybrid_retrieve
 from langsmith.run_helpers import get_current_run_tree, traceable
 
@@ -21,6 +21,22 @@ router = APIRouter()
 
 def _container(request: Request) -> AppContainer:
     return request.app.state.container
+
+
+async def _record_lifecycle_impacts(container: AppContainer, agent_id: str, operations: List[MemoryOperationRecord]) -> None:
+    """MERGE/ARCHIVE/DELETE decisions made during ingestion are memory-driven
+    savings too — attribute them the same way retrieval-time exclusions are."""
+    for op in operations:
+        if op.operation.value not in ("MERGE", "ARCHIVE", "DELETE") or not op.memory_id or op.judgment is None:
+            continue
+        await container.cost_service.record_lifecycle_impact(
+            agent_id=agent_id,
+            operation=op.operation.value,
+            memory_id=op.memory_id,
+            content=op.judgment.content,
+            reason=op.reason,
+            model=container.settings.openai_model,
+        )
 
 
 @router.get("/health")
@@ -37,10 +53,48 @@ async def list_memory(request: Request, agent_id: Optional[str] = None, status: 
     return [m.model_dump(mode="json") for m in memories]
 
 
+@router.get("/memory/timeline")
+async def memory_timeline(request: Request, agent_id: Optional[str] = None):
+    """All memories for the agent, oldest first — the raw material for the
+    'Memory Evolution' timeline (every status, not just ACTIVE)."""
+    container = _container(request)
+    memories = await container.repository.list_memories(resolve_agent_id(agent_id), limit=1000)
+    memories.sort(key=lambda m: m.created_at)
+    return [m.model_dump(mode="json") for m in memories]
+
+
+@router.get("/memory/graph-full")
+async def memory_graph_full(request: Request, agent_id: Optional[str] = None):
+    """The whole memory graph for the agent (all nodes + all edges touching
+    them) — powers the interactive graph view, one call instead of walking
+    node-by-node from the frontend."""
+    container = _container(request)
+    resolved_agent_id = resolve_agent_id(agent_id)
+    memories = await container.repository.list_memories(resolved_agent_id, limit=1000)
+
+    edges_by_id = {}
+    for memory in memories:
+        for rel in await container.repository.get_relationships_for_node(memory.id, direction="both"):
+            edges_by_id[rel.id] = rel
+
+    return {
+        "nodes": [m.model_dump(mode="json") for m in memories],
+        "edges": [r.model_dump(mode="json") for r in edges_by_id.values()],
+    }
+
+
+@router.get("/memory/{memory_id}/cost-impact")
+async def memory_cost_impact(memory_id: str, request: Request):
+    cost_avoided = await _container(request).cost_service.cost_impact_for_memory(memory_id)
+    return {"memory_id": memory_id, "cost_avoided": cost_avoided}
+
+
 @router.post("/demo/seed")
 async def demo_seed(request: Request):
     container = _container(request)
-    records = await seed_demo_data(container.memory_service, agent_id=container.settings.memtrace_default_agent_id)
+    agent_id = container.settings.memtrace_default_agent_id
+    records = await seed_demo_data(container.memory_service, agent_id=agent_id)
+    await _record_lifecycle_impacts(container, agent_id, records)
     return {"operations": [r.model_dump(mode="json") for r in records]}
 
 
@@ -56,6 +110,7 @@ async def ingest(body: IngestRequest, request: Request):
         metadata=body.metadata,
     )
     result = await container.ingest_workflow.ainvoke({"event": event})
+    await _record_lifecycle_impacts(container, agent_id, result["operations"])
     return {
         "event_id": event.event_id,
         "operations": [op.model_dump(mode="json") for op in result["operations"]],
@@ -74,6 +129,7 @@ async def chat(body: ChatRequest, request: Request):
         content=body.message,
     )
     ingest_result = await container.ingest_workflow.ainvoke({"event": event})
+    await _record_lifecycle_impacts(container, agent_id, ingest_result["operations"])
 
     query_result = await container.query_workflow.ainvoke(
         {
@@ -293,10 +349,17 @@ async def cost_summary(request: Request, agent_id: Optional[str] = None):
 
 
 @router.get("/cost/timeseries")
-async def cost_timeseries(request: Request, agent_id: Optional[str] = None):
+async def cost_timeseries(request: Request, agent_id: Optional[str] = None, granularity: str = "day"):
     container = _container(request)
-    points = await container.cost_service.timeseries(resolve_agent_id(agent_id))
+    points = await container.cost_service.timeseries(resolve_agent_id(agent_id), granularity=granularity)
     return [p.model_dump(mode="json") for p in points]
+
+
+@router.get("/cost/memory-roi")
+async def cost_memory_roi(request: Request, agent_id: Optional[str] = None):
+    container = _container(request)
+    roi = await container.cost_service.memory_roi_summary(resolve_agent_id(agent_id))
+    return roi.model_dump(mode="json")
 
 
 @router.get("/cost/leaks")
