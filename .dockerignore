@@ -1,0 +1,23 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# Secrets and local data
+.env
+*.db
+*.db-shm
+*.db-wal
+
+# VCS / editors / misc
+.git/
+.gitignore
+.vscode/
+.idea/
+.DS_Store

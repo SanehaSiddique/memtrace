@@ -8,7 +8,7 @@ MEMTRACE fixes that. It treats memory as **structured, evolving facts** instead 
 
 - When something changes, MEMTRACE keeps the old fact (marked *historical*) and creates the new one (marked *active*) — nothing is silently overwritten.
 - When the agent needs to answer a question, MEMTRACE decides which facts are still valid *right now*, follows the relationships between them, and hands the agent only what's relevant.
-- Every answer comes with a paper trail: which memories were used, which were excluded, and why.
+- Every answer comes with a paper trail: which memories were used, which were excluded, and why — and, since every avoided piece of unnecessary context has a dollar cost, what it saved.
 
 ## Why this matters
 
@@ -16,26 +16,41 @@ MEMTRACE fixes that. It treats memory as **structured, evolving facts** instead 
 
 A plain vector-search agent might answer **"MongoDB"** — technically once true, currently wrong. MEMTRACE answers **"PostgreSQL"**, and can explain exactly why MongoDB was left out: *"Superseded by PostgreSQL, which is now active for this subject."*
 
-## Two ways to look at it
+## Two ways to look at it, one running system
 
-MEMTRACE ships with one dashboard, two audiences:
+Open the dashboard and you get one running app with two audiences:
 
-- **Executive View** (the default) answers *"how much money are we saving?"* — a headline savings figure, a savings-over-time chart, a "what happens at your scale?" calculator, a breakdown of where AI budget was being wasted, and a "find the source of the mistake" replay that shows an agent giving a wrong (outdated) answer versus the corrected one.
-- **Engineering View** answers *"why did the agent retrieve this?"* — the same underlying pipeline, but shown as the actual memories selected/excluded, their scores and reasons, the raw context sent to the model, and the LangSmith trace ID when tracing is enabled.
+- **Executive View** (the default) — a live, interactive memory graph you can poke at (simulate a real update, run a real query, watch the agent decide), plus the money side of the story: AI spend avoided, a savings-over-time chart, a "what happens at your scale?" calculator, a breakdown of exactly which memory decisions saved money, and a "find the source of the mistake" replay comparing a naive agent's wrong answer to MEMTRACE's correct one.
+- **Engineering View** — the same pipeline from underneath: the memories actually selected/excluded with their scores and reasons, the raw context sent to the model, and the LangSmith trace ID when tracing is enabled.
 
-Every dollar figure in the Executive View is computed from real, recorded pipeline activity (what was actually retrieved vs. what was actually kept) multiplied by a configurable price table — never a hardcoded claim. When there isn't enough recorded activity yet to project from, the dashboard says so plainly instead of guessing.
-
-## How it works, in plain terms
-
-1. **Something happens** — a conversation, a decision, a status update. MEMTRACE treats it as an *event*.
-2. **MEMTRACE reads the event** and pulls out the facts inside it (who/what changed, and to what).
-3. **A judgment step decides what to do** with each fact: is this brand new? Does it replace something we already knew? Is it just restating something we already have? Is it too vague to trust yet?
-4. **The memory graph updates** accordingly — old facts are kept for history, new facts become active, and the two are linked together so the story of *how* something changed is never lost.
-5. **When a question comes in**, MEMTRACE finds the memories that are both *relevant* to the question and *currently valid*, builds a small, focused briefing for the AI model, and answers — while keeping a record of what it used and what it deliberately left out.
-
-Nothing here requires a paid API key to run — if no OpenAI/LLM key is configured, MEMTRACE falls back to deterministic, fully-tested logic so the whole pipeline still works end to end for local development and demos.
+Every dollar figure and every graph edge you see is computed from real, recorded activity — nothing is drawn from fake frontend-only state. Where a number is a projection rather than something already measured, the dashboard says so explicitly (labeled ACTUAL / CALCULATED / PROJECTED / DEMO).
 
 ## Quick start
+
+You need either **Docker** (easiest, one command) or **Python 3.11+ and Node 20+** installed locally (this project is developed and tested against Python 3.14).
+
+### Option A — Docker (recommended)
+
+```bash
+git clone https://github.com/SanehaSiddique/memtrace.git && cd memtrace
+cp .env.example .env          # optional — works with no keys at all
+docker compose up --build
+```
+
+Open **http://localhost:8000/**. That's it — the container builds the React dashboard, installs the Python backend, and serves both from one process. Memory data persists in a Docker volume (`memtrace_data`) across restarts.
+
+Common follow-ups:
+
+```bash
+docker compose up -d --build     # run in the background
+docker compose logs -f           # tail logs
+docker compose down              # stop (keeps the memtrace_data volume, i.e. your memories)
+docker compose down -v           # stop AND wipe stored memory — start completely fresh
+```
+
+Rebuild (`--build`) whenever you change backend or frontend source; `docker compose up` alone just restarts the existing image.
+
+### Option B — run it directly
 
 ```bash
 # 1. Set up the backend
@@ -58,14 +73,24 @@ cd backend
 uvicorn app.main:app --reload
 ```
 
-Then open **http://localhost:8000/** in your browser. Click **"Seed demo data"** to load a small evolving story about a fictional project ("Project Alpha") — a database migration, a rejected alternative, a deployment move, and a couple of decisions still being considered — and start asking it questions.
+Then open **http://localhost:8000/** in your browser either way. Click **"Seed demo data"** to load a small evolving story about a fictional project ("Project Alpha") — a database migration, a rejected alternative, a deployment move, and a couple of decisions still being considered — and start asking it questions.
 
 Try asking:
 - *"What database are we currently using?"*
 - *"What database did we use before?"*
 - *"What does Project Alpha depend on?"*
 
-**Frontend development:** instead of rebuilding on every change, run `npm run dev` inside `frontend/` (with the backend already running on port 8000) for hot-reload at `http://localhost:5173` — it proxies API calls back to the backend automatically.
+**Frontend development:** instead of rebuilding on every change, run `npm run dev` inside `frontend/` (with the backend already running on port 8000, either via Docker or `uvicorn`) for hot-reload at `http://localhost:5173` — it proxies API calls back to the backend automatically.
+
+## How it works, in plain terms
+
+1. **Something happens** — a conversation, a decision, a status update. MEMTRACE treats it as an *event*.
+2. **MEMTRACE reads the event** and pulls out the facts inside it (who/what changed, and to what).
+3. **A judgment step decides what to do** with each fact: is this brand new? Does it replace something we already knew? Is it just restating something we already have? Is it too vague to trust yet?
+4. **The memory graph updates** accordingly — old facts are kept for history, new facts become active, and the two are linked together so the story of *how* something changed is never lost.
+5. **When a question comes in**, MEMTRACE finds the memories that are both *relevant* to the question and *currently valid*, builds a small, focused briefing for the AI model, and answers — while keeping a record of what it used and what it deliberately left out, and what that saved.
+
+Nothing here requires a paid API key to run — if no OpenAI/LLM key is configured, MEMTRACE falls back to deterministic, fully-tested logic so the whole pipeline still works end to end for local development and demos.
 
 ## What's actually happening under the hood
 
@@ -75,7 +100,7 @@ Try asking:
 | **Judgment** | The decision of what to do with a new fact — add it, update an old one, merge it with something we already know, archive it, delete it, or flag it for review. |
 | **Retrieval** | Finding the memories relevant to a question by combining meaning-based search, the relationships between facts, and whether each fact is still currently valid. |
 | **Context** | The short, curated briefing actually handed to the AI model — never the entire memory store. |
-| **Cost** | What the curated briefing actually cost in model spend, versus what an unfiltered "send everything relevant" approach would have cost — the difference is the savings shown on the dashboard. |
+| **Cost** | What the curated briefing actually cost in model spend, versus what an unfiltered "send everything relevant" approach would have cost — the difference is the savings shown on the dashboard, and it's traceable down to the specific memory decision that caused it. |
 
 Optional integrations, both designed to degrade gracefully if unconfigured:
 - **TypeSafe JEV** — used for the bounded add/update/merge/archive/delete/review judgment calls, in place of the built-in rule-based fallback.
@@ -84,6 +109,8 @@ Optional integrations, both designed to degrade gracefully if unconfigured:
 ## Project layout
 
 ```
+Dockerfile             multi-stage build: React dashboard -> static files, served by the FastAPI backend
+docker-compose.yml     one-command local run, with persistent storage for memory data
 backend/app/
   memory/       the memory model, storage, extraction, lifecycle rules, and retrieval logic
   llm/          the model client (real OpenAI-compatible client, or an offline fallback)
@@ -116,6 +143,13 @@ Copy `.env.example` to `.env` and fill in only what you have — everything is o
 | `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_MODEL` | Any OpenAI-compatible model provider, for real answer generation and embeddings. |
 | `TYPESAFE_API_KEY` | Enables TypeSafe JEV for memory judgments. |
 | `LANGCHAIN_API_KEY`, `LANGCHAIN_PROJECT` | Enables LangSmith tracing. |
-| `MEMTRACE_DB_PATH` | Where the local SQLite database file lives. |
+| `MEMTRACE_DB_PATH` | Where the local SQLite database file lives. Overridden to `/data/memtrace.db` inside Docker automatically. |
 
 With none of these set, MEMTRACE still runs completely — it just uses its built-in, deterministic fallbacks instead of external services.
+
+## Troubleshooting
+
+- **Docker build fails to reach npm/pip registries** — you're likely behind a proxy or offline; Docker needs network access during the build.
+- **Port 8000 already in use** — change the host-side port in `docker-compose.yml` (`"8000:8000"` → e.g. `"8001:8000"`), or stop whatever else is using it.
+- **Want a clean slate** — `docker compose down -v` removes the persisted memory database along with the containers.
+- **Changes not showing up** — Docker: re-run with `--build`. Manual: re-run `npm run build` in `frontend/` before restarting `uvicorn`.

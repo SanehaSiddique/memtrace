@@ -1,0 +1,24 @@
+services:
+  memtrace:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      MEMTRACE_DB_PATH: /data/memtrace.db
+      MEMTRACE_ENV: ${MEMTRACE_ENV:-development}
+      MEMTRACE_DEFAULT_AGENT_ID: ${MEMTRACE_DEFAULT_AGENT_ID:-agent-alpha}
+      MEMTRACE_DEBUG: ${MEMTRACE_DEBUG:-true}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      TYPESAFE_API_KEY: ${TYPESAFE_API_KEY:-}
+      LANGCHAIN_TRACING_V2: ${LANGCHAIN_TRACING_V2:-false}
+      LANGCHAIN_API_KEY: ${LANGCHAIN_API_KEY:-}
+      LANGCHAIN_PROJECT: ${LANGCHAIN_PROJECT:-memtrace-hackathon}
+      LANGCHAIN_ENDPOINT: ${LANGCHAIN_ENDPOINT:-https://api.smith.langchain.com}
+    volumes:
+      - memtrace_data:/data
+    restart: unless-stopped
+
+volumes:
+  memtrace_data:
