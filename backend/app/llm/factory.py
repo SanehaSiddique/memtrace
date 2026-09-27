@@ -1,6 +1,5 @@
 from app.config import Settings
 from app.llm.interface import BaseLLMClient
-from app.llm.mock import MockLLMClient
 from app.llm.openai_client import OpenAICompatibleLLMClient
 from app.llm.openrouter_client import OpenRouterLLMClient
 
@@ -21,4 +20,6 @@ def get_llm_client(settings: Settings) -> BaseLLMClient:
             app_name=settings.openrouter_app_name,
         )
 
-    return MockLLMClient()
+    raise RuntimeError(
+        "No live LLM is configured. Set OPENAI_API_KEY (preferred) or OPENROUTER_API_KEY."
+    )

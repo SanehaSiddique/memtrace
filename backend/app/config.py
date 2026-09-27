@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     openai_base_url: Optional[str] = None
     openai_model: str = "gpt-4o-mini"
 
-    # OpenRouter (free-tier friendly; takes priority over OPENAI_API_KEY when set)
+    # OpenRouter is an optional live fallback when OPENAI_API_KEY is absent.
     openrouter_api_key: Optional[str] = None
     openrouter_model: str = "nvidia/nemotron-3-super-120b-a12b:free"
     openrouter_base_url: Optional[str] = None
@@ -27,8 +27,8 @@ class Settings(BaseSettings):
     # TypeSafe JEV
     typesafe_api_key: Optional[str] = None
 
-    # Vercel AI Gateway — JEV bounded memory-lifecycle decisions (real endpoint,
-    # takes priority over the OpenRouter-chat JEV substitute when set)
+    # Vercel AI Gateway — preferred JEV provider for bounded memory-lifecycle
+    # decisions.
     ai_gateway_api_key: Optional[str] = None
     jev_url: str = "https://ai-gateway.vercel.sh/v1/evaluate"
 

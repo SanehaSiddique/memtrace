@@ -5,9 +5,9 @@
   MEMTRACE  — full hybrid pipeline: semantic + graph traversal + temporal
               filtering, exactly what app.agent.workflow's query graph runs.
 
-Both sides answer with the same deterministic offline synthesizer so the
-comparison isolates retrieval quality, not LLM phrasing. Real measured
-numbers only — nothing here is a fabricated "improvement".
+Both sides use the configured live LLM with different retrieved context. The
+comparison therefore exercises the same real answer-generation path exposed
+by the API.
 """
 
 import time
@@ -15,7 +15,7 @@ from typing import List
 
 from pydantic import BaseModel
 
-from app.agent.answering import synthesize_offline_answer
+from app.context.builder import build_context
 from app.evaluation.dataset import EVAL_CASES, EvalCase
 from app.llm.interface import BaseLLMClient
 from app.memory.repository import BaseMemoryRepository
@@ -26,6 +26,12 @@ from app.memory.retrieval import (
     score_and_rank,
     traverse_graph,
 )
+
+_ANSWER_SYSTEM_PROMPT = (
+    "Answer the user's query using ONLY the supplied memory. "
+    "Do not present historical facts as current. Be concise."
+)
+
 
 
 class CaseResult(BaseModel):
@@ -64,17 +70,19 @@ async def _run_memtrace(repository, llm_client, case, agent_id: str):
     candidates = await retrieve_semantic(repository, llm_client, case.query, agent_id)
     candidates = await traverse_graph(repository, candidates)
     ranked = score_and_rank(candidates, top_k=8)
-    selected, _ = apply_temporal_filter(case.query, ranked)
-    answer = synthesize_offline_answer(selected)
+    selected, excluded = apply_temporal_filter(case.query, ranked)
+    context = build_context(case.query, selected, excluded)
+    answer = await llm_client.chat(_ANSWER_SYSTEM_PROMPT, context.context_text)
     latency_ms = (time.perf_counter() - start) * 1000
-    token_estimate = max(1, len(answer) // 4)
+    token_estimate = context.token_estimate
     return answer, latency_ms, token_estimate
 
 
 async def _run_baseline(repository, llm_client, case, agent_id: str):
     start = time.perf_counter()
     hits = await baseline_semantic_retrieve(repository, llm_client, case.query, agent_id, top_k=3)
-    answer = synthesize_offline_answer(hits)
+    context = build_context(case.query, hits, [])
+    answer = await llm_client.chat(_ANSWER_SYSTEM_PROMPT, context.context_text)
     latency_ms = (time.perf_counter() - start) * 1000
     return answer, latency_ms
 

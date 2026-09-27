@@ -17,6 +17,12 @@ services:
       OPENROUTER_SITE_URL: ${OPENROUTER_SITE_URL:-}
       OPENROUTER_APP_NAME: ${OPENROUTER_APP_NAME:-memtrace}
       TYPESAFE_API_KEY: ${TYPESAFE_API_KEY:-}
+      AI_GATEWAY_API_KEY: ${AI_GATEWAY_API_KEY:-}
+      JEV_URL: ${JEV_URL:-https://ai-gateway.vercel.sh/v1/evaluate}
+      G8_API_KEY: ${G8_API_KEY:-}
+      G8_MCP_MODE: ${G8_MCP_MODE:-dev}
+      G8_MCP_URL: ${G8_MCP_URL:-https://be.graph8.com/mcp/}
+      G8_MCP_ALLOW_MUTATIONS: ${G8_MCP_ALLOW_MUTATIONS:-false}
       LANGCHAIN_TRACING_V2: ${LANGCHAIN_TRACING_V2:-false}
       LANGCHAIN_API_KEY: ${LANGCHAIN_API_KEY:-}
       LANGCHAIN_PROJECT: ${LANGCHAIN_PROJECT:-memtrace-hackathon}

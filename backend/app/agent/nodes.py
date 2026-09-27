@@ -7,7 +7,6 @@ interfaces, injected via closures from `app.agent.workflow`, never on a
 concrete database or provider.
 """
 
-from app.agent.answering import synthesize_offline_answer
 from app.context.builder import build_context
 from app.judgment.interface import BaseMemoryJudge
 from app.llm.interface import BaseLLMClient
@@ -91,10 +90,7 @@ def make_generate_response_node(llm_client: BaseLLMClient):
     @traced(name="agent.answer")
     async def generate_response(state: dict) -> dict:
         context = state["context"]
-        if llm_client.is_live:
-            answer = await llm_client.chat(_ANSWER_SYSTEM_PROMPT, context.context_text)
-        else:
-            answer = synthesize_offline_answer(state["selected_memories"])
+        answer = await llm_client.chat(_ANSWER_SYSTEM_PROMPT, context.context_text)
 
         trace_metadata = {
             "retrieval_mode": "hybrid",

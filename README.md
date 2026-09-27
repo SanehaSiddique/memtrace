@@ -90,7 +90,7 @@ Try asking:
 4. **The memory graph updates** accordingly — old facts are kept for history, new facts become active, and the two are linked together so the story of *how* something changed is never lost.
 5. **When a question comes in**, MEMTRACE finds the memories that are both *relevant* to the question and *currently valid*, builds a small, focused briefing for the AI model, and answers — while keeping a record of what it used and what it deliberately left out, and what that saved.
 
-Nothing here requires a paid API key to run — if no OpenAI/LLM key is configured, MEMTRACE falls back to deterministic, fully-tested logic so the whole pipeline still works end to end for local development and demos.
+Runtime answers always come from a configured live LLM. The server fails clearly at startup when no live LLM or JEV provider is configured; it never substitutes a fabricated offline answer.
 
 ## What's actually happening under the hood
 
@@ -102,9 +102,9 @@ Nothing here requires a paid API key to run — if no OpenAI/LLM key is configur
 | **Context** | The short, curated briefing actually handed to the AI model — never the entire memory store. |
 | **Cost** | What the curated briefing actually cost in model spend, versus what an unfiltered "send everything relevant" approach would have cost — the difference is the savings shown on the dashboard, and it's traceable down to the specific memory decision that caused it. |
 
-Optional integrations, both designed to degrade gracefully if unconfigured:
-- **TypeSafe JEV** — used for the bounded add/update/merge/archive/delete/review judgment calls, in place of the built-in rule-based fallback.
-- **LangSmith** — full execution tracing across every step of the pipeline, when an API key is provided.
+Provider integrations:
+- **Vercel AI Gateway + TypeSafe JEV** — required for bounded add/update/merge/archive/delete/review judgments (`AI_GATEWAY_API_KEY`).
+- **LangSmith** — optional full execution tracing across every step of the pipeline.
 
 ## Project layout
 
@@ -113,7 +113,7 @@ Dockerfile             multi-stage build: React dashboard -> static files, serve
 docker-compose.yml     one-command local run, with persistent storage for memory data
 backend/app/
   memory/       the memory model, storage, extraction, lifecycle rules, and retrieval logic
-  llm/          the model client (real OpenAI-compatible client, or an offline fallback)
+  llm/          live OpenAI-compatible model clients
   judgment/     the ADD/UPDATE/MERGE/ARCHIVE/DELETE/REVIEW decision logic
   context/      builds the final, minimal briefing handed to the model
   cost/         turns retrieval activity into dollar figures (configurable pricing, savings, projections)
@@ -132,25 +132,27 @@ backend/tests/  automated tests for all of the above
 pytest
 ```
 
-This runs the full test suite, including an end-to-end comparison: on the demo story, MEMTRACE's approach answers **10 out of 10** evaluation questions correctly, versus **5 out of 10** for a naive "search for similar text" baseline — because the baseline has no way to tell current facts from outdated ones.
+This runs the hermetic test suite. The dashboard's `/evaluate` flow uses your configured live model, so its measured answers and accuracy can vary by model.
 
 ## Configuration
 
-Copy `.env.example` to `.env` and fill in only what you have — everything is optional:
+Copy `.env.example` to `.env`. Configure OpenAI and Vercel AI Gateway at minimum:
 
 | Variable | What it's for |
 |---|---|
-| `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_MODEL` | Any OpenAI-compatible model provider, for real answer generation and embeddings. |
-| `OPENROUTER_API_KEY`, `OPENROUTER_MODEL` | [OpenRouter](https://openrouter.ai) — free-tier friendly, no card required. Takes priority over `OPENAI_API_KEY` when both are set. |
-| `TYPESAFE_API_KEY` | Enables TypeSafe JEV for memory judgments. |
+| `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_MODEL` | OpenAI model used for real answer generation, extraction, and embeddings. OpenAI takes precedence when configured. |
+| `AI_GATEWAY_API_KEY`, `JEV_URL` | Vercel AI Gateway credentials and the native JEV evaluation endpoint. |
+| `G8_API_KEY`, `G8_MCP_URL` | Graph8 MCP credentials and endpoint. |
+| `OPENROUTER_API_KEY`, `OPENROUTER_MODEL` | Optional alternate live LLM used only when OpenAI is absent. |
+| `TYPESAFE_API_KEY` | Optional direct TypeSafe JEV fallback when the Vercel gateway key is absent. |
 | `LANGCHAIN_API_KEY`, `LANGCHAIN_PROJECT` | Enables LangSmith tracing. |
 | `MEMTRACE_DB_PATH` | Where the local SQLite database file lives. Overridden to `/data/memtrace.db` inside Docker automatically. |
 
-With none of these set, MEMTRACE still runs completely — it just uses its built-in, deterministic fallbacks instead of external services.
+If live LLM or JEV credentials are missing, startup fails with a configuration error instead of serving fake answers or judgments.
 
 ### Using OpenRouter for a free real LLM
 
-MEMTRACE runs fully offline by default (no key needed), but if you want real answer generation without paying for API access, [OpenRouter](https://openrouter.ai) gives out free API keys with access to a rotating catalog of `:free`-suffixed models.
+If you deliberately do not want OpenAI, [OpenRouter](https://openrouter.ai) can serve as an alternate live answer-generation provider.
 
 1. Sign up at https://openrouter.ai and create a key at https://openrouter.ai/keys (no card required for free models).
 2. Pick a current free model from https://openrouter.ai/models?max_price=0 — the list changes over time as providers rotate models in and out.
@@ -161,7 +163,7 @@ MEMTRACE runs fully offline by default (no key needed), but if you want real ans
    ```
 4. Restart the backend (`docker compose up --build`, or re-run `uvicorn` if running locally).
 
-Note: OpenRouter's free tier has no free embeddings model, so MEMTRACE still uses its built-in offline hashing embedder for retrieval either way — only answer generation (and fact extraction/judgment, if `TYPESAFE_API_KEY` isn't set) goes through OpenRouter. This keeps retrieval fast and free while giving you real LLM-written answers.
+Note: OpenRouter uses the local hashing embedder for retrieval. Memory judgments still require Vercel JEV or a direct TypeSafe JEV key.
 
 ## Troubleshooting
 

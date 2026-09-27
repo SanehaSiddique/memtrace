@@ -9,7 +9,7 @@ operation/memory_type criteria `JEVMemoryJudge` already authored, just over a
 plain httpx POST instead of the typesafe_sdk client.
 """
 
-from typing import List, Optional
+from typing import List
 
 import httpx
 
@@ -44,24 +44,20 @@ class AIGatewayJEVClient(BaseMemoryJudge):
     def _headers(self) -> dict:
         return {"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"}
 
-    async def evaluate(self, state, questions: dict) -> Optional[dict]:
-        """Raw System-One-shaped call, reused by the memory judge below and by
-        other bounded yes/no/choice decisions elsewhere (e.g. the query
-        pipeline's "does this need external lookup?" check) so every bounded
-        decision in the app goes through the same real JEV endpoint. Returns
-        None (never raises) on any HTTP/parse failure, so callers can fall
-        back to a safe default instead of taking down the whole request."""
-        try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
-                response = await client.post(
-                    self._url,
-                    headers=self._headers(),
-                    json={"model": self._model, "state": state, "questions": questions},
-                )
-                response.raise_for_status()
-                return response.json()
-        except Exception:
-            return None
+    async def evaluate(self, state, questions: dict) -> dict:
+        """Call the real JEV endpoint and return its typed answers.
+
+        Provider failures propagate so callers never mistake a fabricated
+        fallback for a real judgment.
+        """
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            response = await client.post(
+                self._url,
+                headers=self._headers(),
+                json={"model": self._model, "state": state, "questions": questions},
+            )
+            response.raise_for_status()
+            return response.json()
 
     async def judge(
         self,
@@ -103,8 +99,6 @@ class AIGatewayJEVClient(BaseMemoryJudge):
             )
 
         result = await self.evaluate(state, questions)
-        if result is None:
-            return self._fallback(candidate, "jev_fallback: AI Gateway call failed")
 
         try:
             answers = result["answers"]
@@ -114,8 +108,8 @@ class AIGatewayJEVClient(BaseMemoryJudge):
             # The native Vercel evaluation endpoint returns one probability per
             # choice, rather than the TypeSafe SDK's singular `confidence`.
             confidence = float(operation_answer.get("probabilities", {}).get(operation.value, candidate.confidence))
-        except (KeyError, ValueError, TypeError):
-            return self._fallback(candidate, "jev_fallback: unparseable AI Gateway response")
+        except (KeyError, ValueError, TypeError) as exc:
+            raise ValueError("Unparseable JEV response from Vercel AI Gateway") from exc
 
         target_memory_id = None
         relation_to_target = None
@@ -144,16 +138,4 @@ class AIGatewayJEVClient(BaseMemoryJudge):
             target_memory_id=target_memory_id,
             relation_to_target=relation_to_target,
             reason=f"jev(ai-gateway):{result.get('model', self._model)}",
-        )
-
-    def _fallback(self, candidate: CandidateMemory, reason: str) -> MemoryJudgment:
-        return MemoryJudgment(
-            operation=MemoryOperationType.ADD,
-            memory_type=candidate.memory_type,
-            subject=candidate.subject,
-            predicate=candidate.predicate,
-            object=candidate.object,
-            content=candidate.content,
-            confidence=candidate.confidence,
-            reason=reason,
         )
