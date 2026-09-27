@@ -35,7 +35,7 @@ async def _record_lifecycle_impacts(container: AppContainer, agent_id: str, oper
             memory_id=op.memory_id,
             content=op.judgment.content,
             reason=op.reason,
-            model=container.settings.openai_model,
+            model=container.active_model_name,
         )
 
 
@@ -144,7 +144,7 @@ async def chat(body: ChatRequest, request: Request):
         agent_id=agent_id,
         conversation_id=body.conversation_id,
         query=body.message,
-        model=container.settings.openai_model,
+        model=container.active_model_name,
         retrieved=query_result["retrieved_memories"],
         selected=query_result["selected_memories"],
         excluded=query_result["excluded_memories"],
@@ -179,7 +179,7 @@ async def query_memory(body: QueryRequest, request: Request):
         agent_id=agent_id,
         conversation_id=body.conversation_id,
         query=body.query,
-        model=container.settings.openai_model,
+        model=container.active_model_name,
         retrieved=result["retrieved_memories"],
         selected=result["selected_memories"],
         excluded=result["excluded_memories"],
@@ -273,7 +273,7 @@ async def debug_query(body: QueryRequest, request: Request):
         agent_id=agent_id,
         conversation_id=body.conversation_id,
         query=body.query,
-        model=container.settings.openai_model,
+        model=container.active_model_name,
         retrieved=result["retrieved_memories"],
         selected=result["selected_memories"],
         excluded=result["excluded_memories"],

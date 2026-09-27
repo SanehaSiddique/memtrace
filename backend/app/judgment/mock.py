@@ -39,7 +39,14 @@ class MockMemoryJudge(BaseMemoryJudge):
                 reason="Low extraction confidence; routed to human review.",
             )
 
-        if not existing_active:
+        # Retrieval is deliberately recall-oriented (a few plausible candidates, not
+        # a guaranteed-correct one) and leaves disambiguation to the judge — but this
+        # mock judge is deliberately simple (it always trusts the first candidate
+        # rather than reasoning about it), so it only acts on an exact predicate
+        # match, the one signal precise enough to trust blindly. A real judge (JEV)
+        # is what handles the fuzzier candidates.
+        same_predicate = [m for m in existing_active if m.predicate.strip().lower() == candidate.predicate.strip().lower()]
+        if not same_predicate:
             return MemoryJudgment(
                 operation=MemoryOperationType.ADD,
                 memory_type=candidate.memory_type,
@@ -51,7 +58,7 @@ class MockMemoryJudge(BaseMemoryJudge):
                 reason="No existing active memory for this subject/predicate.",
             )
 
-        existing = existing_active[0]
+        existing = same_predicate[0]
         if existing.object.strip().lower() == candidate.object.strip().lower():
             return MemoryJudgment(
                 operation=MemoryOperationType.MERGE,

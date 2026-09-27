@@ -141,11 +141,27 @@ Copy `.env.example` to `.env` and fill in only what you have — everything is o
 | Variable | What it's for |
 |---|---|
 | `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_MODEL` | Any OpenAI-compatible model provider, for real answer generation and embeddings. |
+| `OPENROUTER_API_KEY`, `OPENROUTER_MODEL` | [OpenRouter](https://openrouter.ai) — free-tier friendly, no card required. Takes priority over `OPENAI_API_KEY` when both are set. |
 | `TYPESAFE_API_KEY` | Enables TypeSafe JEV for memory judgments. |
 | `LANGCHAIN_API_KEY`, `LANGCHAIN_PROJECT` | Enables LangSmith tracing. |
 | `MEMTRACE_DB_PATH` | Where the local SQLite database file lives. Overridden to `/data/memtrace.db` inside Docker automatically. |
 
 With none of these set, MEMTRACE still runs completely — it just uses its built-in, deterministic fallbacks instead of external services.
+
+### Using OpenRouter for a free real LLM
+
+MEMTRACE runs fully offline by default (no key needed), but if you want real answer generation without paying for API access, [OpenRouter](https://openrouter.ai) gives out free API keys with access to a rotating catalog of `:free`-suffixed models.
+
+1. Sign up at https://openrouter.ai and create a key at https://openrouter.ai/keys (no card required for free models).
+2. Pick a current free model from https://openrouter.ai/models?max_price=0 — the list changes over time as providers rotate models in and out.
+3. Set in your `.env`:
+   ```bash
+   OPENROUTER_API_KEY="sk-or-v1-..."
+   OPENROUTER_MODEL="nvidia/nemotron-3-super-120b-a12b:free"   # or any other ":free" model id
+   ```
+4. Restart the backend (`docker compose up --build`, or re-run `uvicorn` if running locally).
+
+Note: OpenRouter's free tier has no free embeddings model, so MEMTRACE still uses its built-in offline hashing embedder for retrieval either way — only answer generation (and fact extraction/judgment, if `TYPESAFE_API_KEY` isn't set) goes through OpenRouter. This keeps retrieval fast and free while giving you real LLM-written answers.
 
 ## Troubleshooting
 

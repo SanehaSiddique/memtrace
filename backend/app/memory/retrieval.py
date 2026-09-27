@@ -33,7 +33,7 @@ _STOPWORDS = {
     "what", "which", "who", "are", "we", "is", "the", "a", "an", "of", "to", "for", "in", "on",
     "now", "did", "do", "does", "currently", "still", "this", "that", "it",
     "and", "or", "with", "our", "us", "was", "were", "have", "has", "had",
-    "about", "any", "team",
+    "about", "any", "team", "because", "since", "from",
 }
 _STEM_LEN = 4
 
@@ -118,6 +118,58 @@ async def retrieve_semantic(
                     existing.retrieval_reason.append("keyword_match")
 
     return candidates
+
+
+async def find_linkable_active_memories(
+    repository: BaseMemoryRepository,
+    llm_client: BaseLLMClient,
+    agent_id: str,
+    subject: str,
+    predicate: str,
+    obj: str,
+    content: str,
+    scan_limit: int = 500,
+    top_k: int = 5,
+) -> List[Memory]:
+    """Finds active memories plausibly related to a new candidate, for the judge
+    (mock, JEV, or an AI-Gateway/LLM substitute) to pick from — deliberately
+    recall-oriented (top few, not top one): the exact wording of both `subject`
+    *and* `predicate` can drift turn to turn under live LLM extraction (e.g.
+    "uses" vs "uses_database" for the very same fact), so this lookup no
+    longer trusts either string as an identity key. It combines two free,
+    local signals per candidate — exact predicate match (still the strongest
+    single signal when the extractor happens to be consistent) and keyword-stem
+    overlap with the old memory's own content (catches "migrated from MongoDB
+    to X" naming the very fact it replaces) — and leaves the actual
+    ADD/UPDATE/MERGE/etc. decision, including *which* candidate (if any) is
+    the real target, to the judge itself rather than deciding it here.
+    """
+    active = await repository.list_memories(agent_id, status=MemoryStatus.ACTIVE, limit=scan_limit)
+    if not active:
+        return []
+
+    # Deliberately excludes `subject` from the overlap text: at demo scale every
+    # candidate shares the same one or two subjects, so subject tokens are pure
+    # noise here that would otherwise make every candidate look related to
+    # every existing memory — the discriminative signal lives in predicate/
+    # object/content, not subject.
+    predicate_key = predicate.strip().lower()
+    candidate_tokens = _keyword_stems(f"{predicate.replace('_', ' ')} {obj} {content}")
+
+    scored: List[Tuple[float, Memory]] = []
+    for memory in active:
+        score = 0.0
+        if memory.predicate.strip().lower() == predicate_key:
+            score += 1.0
+        memory_tokens = _keyword_stems(f"{memory.predicate.replace('_', ' ')} {memory.object} {memory.content}")
+        overlap = candidate_tokens & memory_tokens
+        if overlap:
+            score += min(1.0, 0.2 * len(overlap))
+        if score > 0:
+            scored.append((score, memory))
+
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return [memory for _, memory in scored[:top_k]]
 
 
 async def traverse_graph(
