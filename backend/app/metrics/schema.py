@@ -79,6 +79,13 @@ class TurnMetrics(BaseModel):
     graph_write_latency_ms: Optional[float] = None
     graph_write_jev_calls: Optional[int] = None
 
+    # --- live "thinking process" data, carried into the stored record too --
+    # (docs/IMPLEMENTATION_V2.md §6, agent2 only) — the TraceEvent stream (§5.2)
+    # shows these live during the turn; these fields let the dashboard show the
+    # same numbers after the fact, from `/api/metrics/{session_id}`.
+    jev_routing_probabilities: Optional[Dict[str, float]] = None
+    jev_filtering_chunk_scores: Optional[List[float]] = None
+
 
 class TraceEvent(BaseModel):
     """One step in the live "thinking process" stream (docs/IMPLEMENTATION_V2.md

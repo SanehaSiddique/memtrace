@@ -198,6 +198,14 @@ def build_agent1_graph(llm: LLMClient, tools: Graph8MCPClient, memory: Agent1Mem
         except LLMUnavailableError as exc:
             trace.notes.append(f"llm_unavailable_final: {exc}")
             return {"answer": _PROVIDER_UNAVAILABLE_ANSWER, "trace": trace.model_dump()}
+        if not response.content:
+            # A "successful" stream can still finish with zero content deltas
+            # under provider capacity pressure (e.g. Groq cutting off a
+            # reasoning model's completion once the request's prompt tokens
+            # exhaust its per-minute budget) — no exception is raised, so
+            # this must be checked explicitly. Never show a blank answer.
+            trace.notes.append("empty_stream_completion")
+            return {"answer": _PROVIDER_UNAVAILABLE_ANSWER, "trace": trace.model_dump()}
         return {"answer": response.content, "trace": trace.model_dump()}
 
     @traced(name="agent1.extract_facts")

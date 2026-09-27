@@ -137,6 +137,44 @@ export default function MetricsDashboard({ latestA1Metrics, latestA2Metrics, ses
                 </td>
               </tr>
               <tr>
+                <td><strong>JEV Routing Confidence</strong></td>
+                <td>N/A — no JEV routing</td>
+                <td>
+                  {latestA2Metrics?.jev_routing_probabilities
+                    ? (() => {
+                        const sorted = Object.entries(latestA2Metrics.jev_routing_probabilities).sort((a, b) => b[1] - a[1]);
+                        const [topTool, topProb] = sorted[0] || [];
+                        const runnerUp = sorted[1]?.[1];
+                        return topTool ? (
+                          <span>
+                            <strong>{topTool}</strong> @ {topProb.toFixed(2)}
+                            {runnerUp !== undefined && (
+                              <span style={{ color: "var(--text-faint)" }}> (next-best {runnerUp.toFixed(2)})</span>
+                            )}
+                          </span>
+                        ) : "—";
+                      })()
+                    : "—"}
+                </td>
+                <td style={{ color: "var(--text-dim)" }}>
+                  {latestA2Metrics?.jev_routing_probabilities
+                    ? `${Object.keys(latestA2Metrics.jev_routing_probabilities).length} tools scored`
+                    : "—"}
+                </td>
+              </tr>
+              <tr>
+                <td><strong>Background Graph Write (Agent2)</strong></td>
+                <td>N/A — no background write</td>
+                <td>
+                  {latestA2Metrics?.graph_write_latency_ms != null
+                    ? `${Math.round(latestA2Metrics.graph_write_latency_ms)}ms, ${latestA2Metrics.graph_write_jev_calls ?? 0} JEV call(s)`
+                    : "Pending / none this turn"}
+                </td>
+                <td style={{ color: "var(--text-dim)" }}>
+                  Never gates the answer above — reported honestly, not hidden (§4.3)
+                </td>
+              </tr>
+              <tr>
                 <td><strong>Est. Turn Cost (GPT-4o)</strong></td>
                 <td>
                   {latestA1Metrics?.cost_projected?.["gpt-4o"] !== undefined

@@ -632,6 +632,18 @@ footer.app-footer { text-align: center; color: var(--text-faint); font-size: 12p
   40% { transform: scale(1); opacity: 1; }
 }
 
+.streaming-cursor {
+  display: inline-block;
+  margin-left: 1px;
+  color: var(--green);
+  animation: pulse-opacity 0.9s infinite ease-in-out;
+}
+
+@keyframes pulse-opacity {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
 .comparison-table-wrapper {
   overflow-x: auto;
 }

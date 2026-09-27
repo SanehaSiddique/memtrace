@@ -15,6 +15,7 @@ export default function ChatPanel({
   isTyping = false,
   statusText = "",
   lastToolCall = null,
+  streamingText = "",
 }) {
   const scrollRef = useRef(null);
 
@@ -22,7 +23,7 @@ export default function ChatPanel({
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [messages, isTyping, lastToolCall]);
+  }, [messages, isTyping, lastToolCall, streamingText]);
 
   const badgeClass = tagColor === "green" ? "badge badge-active" : "badge";
 
@@ -95,7 +96,16 @@ export default function ChatPanel({
           ))
         )}
 
-        {isTyping && (
+        {isTyping && streamingText && (
+          <div className="chat-message chat-message-assistant">
+            <div className="chat-message-body">
+              {streamingText}
+              <span className="streaming-cursor">▊</span>
+            </div>
+          </div>
+        )}
+
+        {isTyping && !streamingText && (
           <div className="chat-message chat-message-assistant typing-indicator-box">
             <div className="chat-typing-dots">
               <span className="dot"></span>

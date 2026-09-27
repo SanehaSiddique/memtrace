@@ -140,6 +140,7 @@ def build_agent2_graph(llm: LLMClient, tools: Graph8MCPClient, jev: JEVClient, m
         trace.tool_selection_time_ms = decision.latency_ms
         trace.tools_in_prompt = [s["function"]["name"] for s in decision.schemas_to_inject]
         trace.notes.extend(decision.notes)
+        trace.details["jev_routing_probabilities"] = decision.probabilities
         await _emit_step(
             state,
             "jev_routing_result",
@@ -244,6 +245,9 @@ def build_agent2_graph(llm: LLMClient, tools: Graph8MCPClient, jev: JEVClient, m
         trace.notes.extend(filter_res.notes)
         trace.details["filter_chunks_total"] = filter_res.chunks_total
         trace.details["filter_chunks_kept"] = filter_res.chunks_kept
+        trace.details["jev_filtering_chunk_scores"] = [
+            c["score"] for c in filter_res.chunk_details if c.get("score") is not None
+        ]
         await _emit_step(
             state,
             "jev_filtering_result",
@@ -309,9 +313,17 @@ def build_agent2_graph(llm: LLMClient, tools: Graph8MCPClient, jev: JEVClient, m
             trace.answer = _PROVIDER_UNAVAILABLE_ANSWER
             return {"answer": _PROVIDER_UNAVAILABLE_ANSWER, "trace": trace.model_dump()}
 
-        trace.answer = response.content
         if not response.content:
-            trace.notes.append("no_answer_generated")
+            # A "successful" stream can still finish with zero content deltas
+            # under provider capacity pressure (e.g. Groq cutting off a
+            # reasoning model's completion once the request's prompt tokens
+            # exhaust its per-minute budget) — no exception is raised, so
+            # this must be checked explicitly. Never show a blank answer.
+            trace.notes.append("empty_stream_completion")
+            trace.answer = _PROVIDER_UNAVAILABLE_ANSWER
+            return {"answer": _PROVIDER_UNAVAILABLE_ANSWER, "trace": trace.model_dump()}
+
+        trace.answer = response.content
         return {"answer": response.content, "trace": trace.model_dump()}
 
     def _after_reasoning(state: Agent2State) -> str:

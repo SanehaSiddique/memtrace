@@ -41,6 +41,10 @@ def build_turn_metrics(
 
     cost_projected = project_cost_all(prompt_tokens, completion_tokens)
 
+    # §6, agent2 only — None for agent1 since its trace never sets these.
+    jev_routing_probabilities = trace.details.get("jev_routing_probabilities")
+    jev_filtering_chunk_scores = trace.details.get("jev_filtering_chunk_scores")
+
     return TurnMetrics(
         agent_id=trace.agent_id,
         run_group_id=run_group_id,
@@ -68,6 +72,8 @@ def build_turn_metrics(
         tool_names=list(trace.tools_in_prompt),
         tool_errors=list(trace.tool_errors),
         notes=list(trace.notes),
+        jev_routing_probabilities=jev_routing_probabilities,
+        jev_filtering_chunk_scores=jev_filtering_chunk_scores,
         store_backends=dict(store_backends or {}),
         created_at=datetime.now(timezone.utc).isoformat(),
     )

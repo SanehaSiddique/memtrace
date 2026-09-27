@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import ChatPanel from "./ChatPanel";
+import AgentTracePanel from "./AgentTracePanel";
 import MetricsDashboard from "./MetricsDashboard";
 import GraphView from "./GraphView";
 import CostComparison from "./CostComparison";
@@ -29,6 +30,12 @@ export default function DualAgentComparisonView({ sessionId = "default_session" 
   const [a1LastTool, setA1LastTool] = useState(null);
   const [a2LastTool, setA2LastTool] = useState(null);
 
+  // Live "thinking process" trace for the current turn (docs/IMPLEMENTATION_V2.md §5.3)
+  const [a1Trace, setA1Trace] = useState([]);
+  const [a2Trace, setA2Trace] = useState([]);
+  const [a1StreamingText, setA1StreamingText] = useState("");
+  const [a2StreamingText, setA2StreamingText] = useState("");
+
   // Latest turn metrics & summary
   const [latestA1Metrics, setLatestA1Metrics] = useState(null);
   const [latestA2Metrics, setLatestA2Metrics] = useState(null);
@@ -54,13 +61,34 @@ export default function DualAgentComparisonView({ sessionId = "default_session" 
     const unsubscribe = subscribe((event) => {
       const now = new Date().toLocaleTimeString();
 
+      // TraceEvents (docs/IMPLEMENTATION_V2.md §5.2) carry `step`+`timestamp`+`detail`
+      // instead of ChatEvent's `event`+`data` — distinguish by shape, same connection.
+      if (event.step) {
+        if (event.agent_id === "agent1") {
+          setA1Trace((prev) => [...prev, event]);
+          if (event.step === "llm_final_answer_token") {
+            setA1StreamingText((prev) => prev + (event.detail?.token || ""));
+          }
+        } else if (event.agent_id === "agent2") {
+          setA2Trace((prev) => [...prev, event]);
+          if (event.step === "llm_final_answer_token") {
+            setA2StreamingText((prev) => prev + (event.detail?.token || ""));
+          }
+        }
+        return;
+      }
+
       if (event.event === "status") {
         if (event.agent_id === "agent1") {
           setA1Typing(true);
           setA1Status(event.data?.status || "Reasoning...");
+          setA1Trace([]);
+          setA1StreamingText("");
         } else if (event.agent_id === "agent2") {
           setA2Typing(true);
           setA2Status(event.data?.status || "Reasoning...");
+          setA2Trace([]);
+          setA2StreamingText("");
         }
       } else if (event.event === "tool_call") {
         if (event.agent_id === "agent1") {
@@ -85,6 +113,7 @@ export default function DualAgentComparisonView({ sessionId = "default_session" 
           ]);
           setA1Typing(false);
           setA1LastTool(null);
+          setA1StreamingText("");
         } else if (event.agent_id === "agent2") {
           setA2Messages((prev) => [
             ...prev,
@@ -98,6 +127,7 @@ export default function DualAgentComparisonView({ sessionId = "default_session" 
           ]);
           setA2Typing(false);
           setA2LastTool(null);
+          setA2StreamingText("");
         }
       } else if (event.event === "metrics") {
         if (event.agent_id === "agent1") {
@@ -173,6 +203,10 @@ export default function DualAgentComparisonView({ sessionId = "default_session" 
       setLatestA2Metrics(null);
       setSessionSummary(null);
       setGraphSignal((n) => n + 1);
+      setA1Trace([]);
+      setA2Trace([]);
+      setA1StreamingText("");
+      setA2StreamingText("");
     } catch (e) {
       console.warn("Reset failed:", e);
     }
@@ -231,26 +265,34 @@ export default function DualAgentComparisonView({ sessionId = "default_session" 
       {activeTab === "chat" && (
         <div className="tab-pane-chat">
           <div className="grid grid-2" style={{ marginBottom: 20 }}>
-            <ChatPanel
-              agentId="agent1"
-              agentTitle="Agent 1 (Naive Baseline)"
-              agentSubtitle="Flat Postgres facts (active + stale) + all tools loaded + raw unfiltered tool payloads"
-              tagColor="red"
-              messages={a1Messages}
-              isTyping={a1Typing}
-              statusText={a1Status}
-              lastToolCall={a1LastTool}
-            />
-            <ChatPanel
-              agentId="agent2"
-              agentTitle="Agent 2 (Neo4j + JEV Memory Layer)"
-              agentSubtitle="Active Neo4j facts + JEV tool routing + JEV score chunk filtering + JEV noul staleness"
-              tagColor="green"
-              messages={a2Messages}
-              isTyping={a2Typing}
-              statusText={a2Status}
-              lastToolCall={a2LastTool}
-            />
+            <div>
+              <ChatPanel
+                agentId="agent1"
+                agentTitle="Agent 1 (Naive Baseline)"
+                agentSubtitle="Flat Postgres facts (active + stale) + all tools loaded + raw unfiltered tool payloads"
+                tagColor="red"
+                messages={a1Messages}
+                isTyping={a1Typing}
+                statusText={a1Status}
+                lastToolCall={a1LastTool}
+                streamingText={a1StreamingText}
+              />
+              <AgentTracePanel agentId="agent1" events={a1Trace} />
+            </div>
+            <div>
+              <ChatPanel
+                agentId="agent2"
+                agentTitle="Agent 2 (Neo4j + JEV Memory Layer)"
+                agentSubtitle="Active Neo4j facts + JEV tool routing + JEV score chunk filtering + JEV noul staleness"
+                tagColor="green"
+                messages={a2Messages}
+                isTyping={a2Typing}
+                statusText={a2Status}
+                lastToolCall={a2LastTool}
+                streamingText={a2StreamingText}
+              />
+              <AgentTracePanel agentId="agent2" events={a2Trace} />
+            </div>
           </div>
 
           {/* Quick Benchmark Prompt Suggestions */}
