@@ -1,20 +1,161 @@
 """End-to-end API smoke test through FastAPI's TestClient, exercising the
-full ingest -> chat -> debug loop against a fresh, isolated SQLite DB."""
+full ingest -> chat -> debug loop against a fresh, isolated SQLite DB.
+
+These assertions describe the *deterministic* extraction/consolidation rules, so
+the fixture pins the LLM client to the offline Mock. Without that, a real key in
+`.env` (GROQ_API_KEY / OPENROUTER_API_KEY / OPENAI_API_KEY) makes the suite
+non-hermetic: live extraction legitimately produces different candidates and
+counts than the rule-based path, and the suite used to pass only by accident
+whenever the configured free provider was rate-limiting into the fallback.
+"""
 
 import pytest
 from fastapi.testclient import TestClient
 
-from app.config import settings
+from app.config import Settings, settings
+from app.llm.counted import CountedLLMClient
+from app.llm.factory import get_llm_client
+from app.llm.interface import BaseLLMClient, ChatCompletion, ToolCall
 from app.main import app
+
+# Provider keys that would otherwise promote the app off the offline Mock client.
+_LLM_KEY_FIELDS = ("groq_api_key", "openrouter_api_key", "openai_api_key")
 
 
 @pytest.fixture
 def client(tmp_path):
     original_db_path = settings.memtrace_db_path
+    original_keys = {field: getattr(settings, field) for field in _LLM_KEY_FIELDS}
+
     settings.memtrace_db_path = str(tmp_path / "api_test.db")
-    with TestClient(app) as test_client:
-        yield test_client
-    settings.memtrace_db_path = original_db_path
+    for field in _LLM_KEY_FIELDS:
+        setattr(settings, field, None)
+
+    try:
+        with TestClient(app) as test_client:
+            yield test_client
+    finally:
+        settings.memtrace_db_path = original_db_path
+        for field, value in original_keys.items():
+            setattr(settings, field, value)
+
+
+def test_live_llm_client_is_counted_and_cached(monkeypatch):
+    # `_env_file=None` blocks the .env *file*, but real environment variables
+    # still take precedence in pydantic-settings, so clear them too. Each case
+    # then selects its provider purely from the explicit arguments.
+    for field in _LLM_KEY_FIELDS:
+        monkeypatch.delenv(field.upper(), raising=False)
+
+    groq_settings = Settings(
+        _env_file=None,
+        groq_api_key="test-key",
+        groq_model="openai/gpt-oss-120b",
+    )
+    groq_client = get_llm_client(groq_settings)
+    assert isinstance(groq_client, CountedLLMClient)
+    assert groq_client.model_name == "openai/gpt-oss-120b"
+    assert groq_client.inner.provider == "groq"
+
+    # OpenAI takes priority when configured alongside Groq.
+    openai_settings = Settings(
+        _env_file=None,
+        groq_api_key="test-key",
+        openai_api_key="test-key",
+        openai_model="gpt-4o-mini",
+    )
+    openai_client = get_llm_client(openai_settings)
+    assert openai_client.model_name == "gpt-4o-mini"
+    assert openai_client.inner.provider == "openai-compatible"
+
+    # Groq remains ahead of OpenRouter when OpenAI is not configured.
+    both_settings = Settings(
+        _env_file=None,
+        groq_api_key="test-key",
+        openrouter_api_key="test-key",
+    )
+    assert get_llm_client(both_settings).inner.provider == "groq"
+
+    openrouter_settings = Settings(
+        _env_file=None,
+        groq_api_key=None,
+        openrouter_api_key="test-key",
+        openrouter_model="nvidia/nemotron-3-super-120b-a12b:free",
+    )
+    openrouter_client = get_llm_client(openrouter_settings)
+    assert openrouter_client.model_name == "nvidia/nemotron-3-super-120b-a12b:free"
+    assert openrouter_client.inner.provider == "openrouter"
+
+    # With no provider key at all the app stays on the offline Mock.
+    assert get_llm_client(Settings(_env_file=None)).__class__.__name__ == "MockLLMClient"
+
+
+@pytest.mark.asyncio
+async def test_counted_client_forwards_tool_calling_chat_completions():
+    """`CountedLLMClient` must forward `chat_completion` to the wrapped provider.
+
+    Both comparison agents issue tool calls through the counted wrapper. The
+    wrapper used to inherit `BaseLLMClient`'s always-raising default, so every
+    tool-calling turn failed with "does not support tool-calling chat
+    completions" regardless of which live provider was configured.
+    """
+    sent: dict = {}
+
+    class _FakeProvider(BaseLLMClient):
+        is_live = True
+        embeddings_are_local = True
+        provider = "fake"
+        model_name = "fake-model"
+        provider_call_count = 0
+        rate_limit_events = 0
+
+        async def chat(self, system: str, user: str, temperature: float = 0.0) -> str:
+            return "unused"
+
+        async def embed(self, text: str) -> list[float]:
+            return [0.0]
+
+        async def chat_completion(self, messages, tools=None, temperature=0.0, model=None):
+            self.provider_call_count += 1
+            sent["tools"] = tools
+            return ChatCompletion(
+                content="",
+                tool_calls=[ToolCall(id="call_1", name="get_weather", arguments='{"location":"Paris"}')],
+                usage={"prompt_tokens": 11, "completion_tokens": 5, "total_tokens": 16},
+                model="fake-model",
+            )
+
+    provider = _FakeProvider()
+    counted = CountedLLMClient(provider, cache_enabled=True)
+
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "get_weather",
+                "description": "Get weather",
+                "parameters": {"type": "object", "properties": {"location": {"type": "string"}}},
+            },
+        }
+    ]
+    messages = [{"role": "user", "content": "Weather in Paris?"}]
+
+    first = await counted.chat_completion(messages, tools=tools)
+    assert [call.name for call in first.tool_calls] == ["get_weather"]
+    assert sent["tools"] == tools
+    assert first.model == "fake-model"
+
+    # Accounting and caching both flow through the wrapper.
+    snapshot = counted.snapshot()
+    assert snapshot["chat_calls"] == 1
+    assert snapshot["chat_provider_calls"] == 1
+    assert snapshot["tokens_in"] == 11
+    assert snapshot["tokens_out"] == 5
+
+    second = await counted.chat_completion(messages, tools=tools)
+    assert [call.name for call in second.tool_calls] == ["get_weather"]
+    assert counted.snapshot()["chat_cache_hits"] == 1
+    assert provider.provider_call_count == 1  # served from cache, no extra HTTP
 
 
 def test_health(client):

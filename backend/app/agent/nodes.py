@@ -9,6 +9,7 @@ concrete database or provider.
 
 from app.context.builder import build_context
 from app.judgment.interface import BaseMemoryJudge
+from app.llm.errors import LLMUnavailableError
 from app.llm.interface import BaseLLMClient
 from app.memory.consolidation import apply_operation
 from app.memory.extraction import extract_candidates
@@ -93,7 +94,28 @@ def make_generate_response_node(llm_client: BaseLLMClient):
     @traced(name="agent.answer")
     async def generate_response(state: dict) -> dict:
         context = state["context"]
-        answer = await llm_client.chat(_ANSWER_SYSTEM_PROMPT, context.context_text)
+
+        # The answer is always the LLM's, when the provider can serve it. If every
+        # candidate model is rate-limited/congested, the turn still completes from
+        # the graph memory the agent already holds, and says so explicitly in
+        # `answer_source` — a 429 must never turn into a 500 mid-demo.
+        answer_source = "offline_synthesis"
+        answer_note = None
+        answer = None
+
+        if llm_client.is_live:
+            try:
+                answer, _usage, model = await llm_client.chat_with_usage(_ANSWER_SYSTEM_PROMPT, context.context_text)
+                answer_source = f"llm:{model}"
+            except LLMUnavailableError as exc:
+                answer = synthesize_offline_answer(state["selected_memories"])
+                answer_source = "memory_fallback"
+                answer_note = (
+                    f"Model unavailable ({exc}). Answered from graph memory only — no stale or raw payloads "
+                    "were sent anywhere."
+                )
+        else:
+            answer = synthesize_offline_answer(state["selected_memories"])
 
         trace_metadata = {
             "retrieval_mode": "hybrid",
@@ -104,6 +126,8 @@ def make_generate_response_node(llm_client: BaseLLMClient):
             "agent_id": state["agent_id"],
             "conversation_id": state.get("conversation_id"),
             "memory_ids": [sm.memory.id for sm in state["selected_memories"]],
+            "answer_source": answer_source,
+            "answer_note": answer_note,
         }
         return {"answer": answer, "trace_metadata": trace_metadata}
 

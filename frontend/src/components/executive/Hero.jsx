@@ -21,7 +21,7 @@ export default function Hero({ summary, onOpenBreakdown }) {
 
       {!hasActivity && (
         <div className="hero-sub" style={{ marginBottom: 10 }}>
-          No activity recorded yet. Click "Seed demo data" above, then ask a question below to see savings appear.
+          No activity recorded yet. Run the live benchmark to ingest memories, then ask a question below to see savings appear.
         </div>
       )}
 

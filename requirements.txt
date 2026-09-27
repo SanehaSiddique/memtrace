@@ -9,5 +9,10 @@ langgraph
 langchain-core
 langsmith
 typesafe-sdk
+asyncpg
+neo4j
+mcp
+g8-mcp-server
 pytest
 pytest-asyncio
+

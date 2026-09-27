@@ -3,19 +3,21 @@
 OPENAI_BASE_URL. No official `openai` SDK dependency required.
 """
 
-import logging
-import time
-from typing import List
+from typing import Awaitable, Callable, List, Optional, Tuple
 
 import httpx
 
-from app.llm.interface import BaseLLMClient
+from app.llm.errors import LLMRateLimitedError
+from app.llm.interface import BaseLLMClient, ChatCompletion
+from app.llm.wire import StreamRateLimited, parse_chat_completion, stream_chat_completion
 
 logger = logging.getLogger("uvicorn.error")
 
 
 class OpenAICompatibleLLMClient(BaseLLMClient):
     is_live = True
+    embeddings_are_local = False  # this one really calls /embeddings
+    provider = "openai-compatible"
 
     def __init__(
         self,
@@ -23,11 +25,17 @@ class OpenAICompatibleLLMClient(BaseLLMClient):
         base_url: str | None = None,
         model: str = "gpt-4o-mini",
         embedding_model: str = "text-embedding-3-small",
+        transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._api_key = api_key
         self._base_url = (base_url or "https://api.openai.com/v1").rstrip("/")
         self._model = model
+        self.model_name = model
         self._embedding_model = embedding_model
+        self._transport = transport
+        # Mirrors OpenRouterLLMClient so the same counters work for both.
+        self.provider_call_count = 0
+        self.rate_limit_events = 0
 
     @property
     def provider_name(self) -> str:
@@ -41,69 +49,73 @@ class OpenAICompatibleLLMClient(BaseLLMClient):
         return {"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"}
 
     async def chat(self, system: str, user: str, temperature: float = 0.0) -> str:
-        started = time.perf_counter()
-        logger.info("[memtrace.llm] chat.start provider=openai model=%s", self._model)
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    f"{self._base_url}/chat/completions",
-                    headers=self._headers(),
-                    json={
-                        "model": self._model,
-                        "temperature": temperature,
-                        "messages": [
-                            {"role": "system", "content": system},
-                            {"role": "user", "content": user},
-                        ],
-                    },
-                )
-                response.raise_for_status()
-                data = response.json()
-                answer = data["choices"][0]["message"]["content"]
-        except httpx.HTTPStatusError as exc:
-            logger.exception(
-                "[memtrace.llm] chat.error provider=openai model=%s status=%s elapsed_ms=%.1f",
-                self._model,
-                exc.response.status_code,
-                (time.perf_counter() - started) * 1000,
-            )
-            raise
-        except Exception:
-            logger.exception(
-                "[memtrace.llm] chat.error provider=openai model=%s elapsed_ms=%.1f",
-                self._model,
-                (time.perf_counter() - started) * 1000,
-            )
-            raise
+        text, _usage, _model = await self.chat_with_usage(system, user, temperature)
+        return text
 
-        logger.info(
-            "[memtrace.llm] chat.complete provider=openai model=%s status=%s elapsed_ms=%.1f output_chars=%s",
-            self._model,
-            response.status_code,
-            (time.perf_counter() - started) * 1000,
-            len(answer),
+    async def chat_with_usage(self, system: str, user: str, temperature: float = 0.0) -> Tuple[str, dict, str]:
+        completion = await self.chat_completion(
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            temperature=temperature,
         )
-        return answer
+        return completion.content, completion.usage, completion.model
+
+    async def chat_completion(
+        self,
+        messages: List[dict],
+        tools: Optional[List[dict]] = None,
+        temperature: float = 0.0,
+        model: Optional[str] = None,
+    ) -> ChatCompletion:
+        self.provider_call_count += 1
+        payload: dict = {"model": model or self._model, "temperature": temperature, "messages": messages}
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
+        async with httpx.AsyncClient(timeout=30.0, transport=self._transport) as client:
+            response = await client.post(
+                f"{self._base_url}/chat/completions",
+                headers=self._headers(),
+                json=payload,
+            )
+            if response.status_code == 429:
+                self.rate_limit_events += 1
+                raise LLMRateLimitedError(f"{payload['model']} is rate-limited (HTTP 429)")
+            response.raise_for_status()
+            data = response.json()
+        return parse_chat_completion(data, fallback_model=str(payload["model"]))
+
+    async def chat_completion_stream(
+        self,
+        messages: List[dict],
+        tools: Optional[List[dict]] = None,
+        temperature: float = 0.0,
+        model: Optional[str] = None,
+        on_token: Optional[Callable[[str], Awaitable[None]]] = None,
+    ) -> ChatCompletion:
+        chosen_model = model or self._model
+        self.provider_call_count += 1
+        payload: dict = {"model": chosen_model, "temperature": temperature, "messages": messages}
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
+        async with httpx.AsyncClient(timeout=30.0, transport=self._transport) as client:
+            try:
+                return await stream_chat_completion(
+                    client, f"{self._base_url}/chat/completions", self._headers(), payload, chosen_model, on_token
+                )
+            except StreamRateLimited as exc:
+                self.rate_limit_events += 1
+                raise LLMRateLimitedError(
+                    f"{chosen_model} is rate-limited (HTTP 429)", exc.retry_after_seconds
+                ) from exc
 
     async def embed(self, text: str) -> List[float]:
-        started = time.perf_counter()
-        logger.info("[memtrace.llm] embed.start provider=openai model=%s", self._embedding_model)
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    f"{self._base_url}/embeddings",
-                    headers=self._headers(),
-                    json={"model": self._embedding_model, "input": text},
-                )
-                response.raise_for_status()
-                data = response.json()
-                embedding = data["data"][0]["embedding"]
-        except httpx.HTTPStatusError as exc:
-            logger.exception(
-                "[memtrace.llm] embed.error provider=openai model=%s status=%s elapsed_ms=%.1f",
-                self._embedding_model,
-                exc.response.status_code,
-                (time.perf_counter() - started) * 1000,
+        self.provider_call_count += 1
+        async with httpx.AsyncClient(timeout=30.0, transport=self._transport) as client:
+            response = await client.post(
+                f"{self._base_url}/embeddings",
+                headers=self._headers(),
+                json={"model": self._embedding_model, "input": text},
             )
             raise
         except Exception:

@@ -4,7 +4,7 @@ services, and repository already built and tested below the API layer."""
 import logging
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 
 from app.api.container import AppContainer
 from app.api.schemas import ChatRequest, IngestRequest, QueryRequest, resolve_agent_id
@@ -15,6 +15,7 @@ from app.evaluation.dataset import EVAL_CASES
 from app.evaluation.runner import run_evaluation
 from app.memory.models import DebugQueryResult, GraphPathStep, MemoryEvent, MemoryOperationRecord, MemoryStatus
 from app.memory.retrieval import baseline_semantic_retrieve, hybrid_retrieve
+from app.metrics.schema import ChatEvent, TurnRequest
 from langsmith.run_helpers import get_current_run_tree, traceable
 
 router = APIRouter()
@@ -405,3 +406,79 @@ async def cost_runs(request: Request, agent_id: Optional[str] = None, limit: int
 async def cost_scale_projection(body: ScaleProjectionRequest):
     projection = project_scale(body.agents, body.runs_per_agent_per_day, body.cost_per_run, body.avoidable_pct)
     return projection.model_dump(mode="json")
+
+
+
+# ---------------------------------------------------------------------------
+# Dual-Agent Benchmarking & Tracing Endpoints (docs/IMPLEMENTATION.md §8)
+# ---------------------------------------------------------------------------
+
+
+@router.websocket("/ws/chat")
+async def websocket_chat(websocket: WebSocket):
+    """Real-time side-by-side agent comparison fan-out over WebSocket (§8)."""
+    await websocket.accept()
+    container: AppContainer = websocket.app.state.container
+
+    async def _broadcast(event: ChatEvent) -> None:
+        await websocket.send_json(event.model_dump())
+
+    try:
+        while True:
+            data = await websocket.receive_json()
+            message = str(data.get("message") or "").strip()
+            session_id = str(data.get("session_id") or "default_session")
+
+            if not message:
+                continue
+
+            if container.orchestrator is not None:
+                await container.orchestrator.run_comparison_turn(
+                    session_id=session_id,
+                    user_message=message,
+                    event_callback=_broadcast,
+                )
+    except WebSocketDisconnect:
+        pass
+
+
+@router.get("/api/graph/{session_id}")
+async def get_session_graph(session_id: str, request: Request):
+    """Returns current Neo4j graph for GraphView.tsx visualization (§8)."""
+    container = _container(request)
+    if container.agent2_memory is None:
+        return {"nodes": [], "edges": []}
+    return await container.agent2_memory.graph_snapshot(session_id)
+
+
+@router.get("/api/metrics/{session_id}")
+async def get_session_metrics(session_id: str, request: Request):
+    """Historical per-turn metrics & cumulative savings for the session (§8)."""
+    container = _container(request)
+    turns = container.metrics_store.get_session_turns(session_id)
+    summary = container.metrics_store.get_session_summary(session_id)
+    return {
+        "turns": [t.model_dump() for t in turns],
+        "summary": summary,
+    }
+
+
+@router.post("/api/chat/compare")
+async def chat_compare(body: TurnRequest, request: Request):
+    """HTTP fallback endpoint for dual-agent comparison."""
+    container = _container(request)
+    if container.orchestrator is None:
+        raise HTTPException(status_code=503, detail="Orchestrator not ready")
+    return await container.orchestrator.run_comparison_turn(
+        session_id=body.session_id,
+        user_message=body.message,
+    )
+
+
+@router.post("/api/chat/reset")
+async def chat_reset(request: Request, session_id: Optional[str] = None):
+    """Reset session metrics and in-memory caches for a fresh benchmark run."""
+    container = _container(request)
+    container.metrics_store.clear(session_id)
+    return {"status": "ok", "cleared_session": session_id or "all"}
+

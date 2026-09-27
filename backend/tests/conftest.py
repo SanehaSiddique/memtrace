@@ -8,13 +8,11 @@ from app.memory.repository import SQLiteMemoryRepository
 
 
 @pytest.fixture(autouse=True)
-def _inject_test_doubles(monkeypatch):
-    from app.api import container as container_module
-
-    monkeypatch.setattr(container_module, "get_llm_client", lambda _settings: MockLLMClient())
-    monkeypatch.setattr(container_module, "get_memory_judge", lambda _settings, _llm: MockMemoryJudge())
-    monkeypatch.setattr(
-        container_module,
-        "get_memory_repository",
-        lambda test_settings: SQLiteMemoryRepository(test_settings.memtrace_db_path),
-    )
+def _no_live_llm_in_tests():
+    keys = ["openai_api_key", "openrouter_api_key", "typesafe_api_key", "jev_api_key", "ai_gateway_api_key", "g8_api_key"]
+    originals = {k: getattr(settings, k) for k in keys}
+    for k in keys:
+        setattr(settings, k, None)
+    yield
+    for k, v in originals.items():
+        setattr(settings, k, v)
