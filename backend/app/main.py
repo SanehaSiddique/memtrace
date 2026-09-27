@@ -3,13 +3,15 @@
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.container import AppContainer
 from app.api.routes import router
 from app.config import settings
+from app.llm.errors import LLMUnavailableError
 from app.tracing.langsmith import configure_langsmith
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -25,10 +27,26 @@ async def lifespan(app: FastAPI):
     container = AppContainer(settings)
     await container.initialize()
     app.state.container = container
-    yield
+    try:
+        yield
+    finally:
+        await container.aclose()
 
 
 app = FastAPI(title="MEMTRACE", description="Memory and context control layer for long-running AI agents.", lifespan=lifespan)
+
+
+@app.exception_handler(LLMUnavailableError)
+async def llm_unavailable_handler(request: Request, exc: LLMUnavailableError):
+    retry_after = exc.retry_after_seconds
+    payload = {
+        "detail": str(exc),
+        "error": "llm_unavailable",
+        "retry_after_seconds": retry_after,
+    }
+    headers = {"Retry-After": str(int(retry_after))} if retry_after is not None else {}
+    return JSONResponse(status_code=503, content=payload, headers=headers)
+
 
 # Permissive CORS: local hackathon demo only, never meant to run like this in production.
 app.add_middleware(

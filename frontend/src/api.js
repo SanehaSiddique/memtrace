@@ -53,6 +53,15 @@ export const api = {
   costRuns: (agentId, limit = 20) => request("/cost/runs", { params: { agent_id: agentId, limit } }),
   scaleProjection: (body) => request("/cost/scale-projection", { method: "POST", body }),
   memoryRoi: (agentId) => request("/cost/memory-roi", { params: { agent_id: agentId } }),
+
+  // Dual-Agent Benchmarking & Tracing Endpoints (docs §8)
+  getGraphSnapshot: (sessionId) => request(`/api/graph/${sessionId}`),
+  getSessionMetrics: (sessionId) => request(`/api/metrics/${sessionId}`),
+  chatCompare: (message, sessionId = "default_session") =>
+    request("/api/chat/compare", { method: "POST", body: { message, session_id: sessionId } }),
+  resetSession: (sessionId) =>
+    request(`/api/chat/reset${sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ""}`, { method: "POST" }),
+
 };
 
 export const DEFAULT_AGENT_ID = "agent-alpha";

@@ -8,6 +8,9 @@ services:
       MEMTRACE_ENV: ${MEMTRACE_ENV:-development}
       MEMTRACE_DEFAULT_AGENT_ID: ${MEMTRACE_DEFAULT_AGENT_ID:-agent-alpha}
       MEMTRACE_DEBUG: ${MEMTRACE_DEBUG:-true}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GROQ_MODEL: ${GROQ_MODEL:-openai/gpt-oss-120b}
+      GROQ_BASE_URL: ${GROQ_BASE_URL:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
@@ -16,7 +19,17 @@ services:
       OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-}
       OPENROUTER_SITE_URL: ${OPENROUTER_SITE_URL:-}
       OPENROUTER_APP_NAME: ${OPENROUTER_APP_NAME:-memtrace}
+
       TYPESAFE_API_KEY: ${TYPESAFE_API_KEY:-}
+      JEV_API_KEY: ${JEV_API_KEY:-}
+      JEV_DECIDE_URL: ${JEV_DECIDE_URL:-https://jevtypesafeai.com/api/v1/decide}
+      AI_GATEWAY_API_KEY: ${AI_GATEWAY_API_KEY:-}
+      G8_API_KEY: ${G8_API_KEY:-}
+      G8_MCP_MODE: ${G8_MCP_MODE:-dev}
+      POSTGRES_URL: ${POSTGRES_URL:-}
+      NEO4J_URI: ${NEO4J_URI:-}
+      NEO4J_USER: ${NEO4J_USER:-neo4j}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-password}
       LANGCHAIN_TRACING_V2: ${LANGCHAIN_TRACING_V2:-false}
       LANGCHAIN_API_KEY: ${LANGCHAIN_API_KEY:-}
       LANGCHAIN_PROJECT: ${LANGCHAIN_PROJECT:-memtrace-hackathon}
@@ -27,3 +40,4 @@ services:
 
 volumes:
   memtrace_data:
+

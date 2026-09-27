@@ -17,6 +17,11 @@ class Settings(BaseSettings):
     openai_base_url: Optional[str] = None
     openai_model: str = "gpt-4o-mini"
 
+    # Groq (fast free-tier models; takes priority when configured)
+    groq_api_key: Optional[str] = None
+    groq_model: str = "openai/gpt-oss-120b"
+    groq_base_url: Optional[str] = None
+
     # OpenRouter (free-tier friendly; takes priority over OPENAI_API_KEY when set)
     openrouter_api_key: Optional[str] = None
     openrouter_model: str = "nvidia/nemotron-3-super-120b-a12b:free"
@@ -24,8 +29,14 @@ class Settings(BaseSettings):
     openrouter_site_url: Optional[str] = None
     openrouter_app_name: str = "memtrace"
 
+
     # TypeSafe JEV
     typesafe_api_key: Optional[str] = None
+
+    # JEV's own live REST API (jv_live_... key) — confirmed-working production
+    # endpoint, takes top priority over every other JEV path below when set.
+    jev_api_key: Optional[str] = None
+    jev_decide_url: str = "https://jevtypesafeai.com/api/v1/decide"
 
     # Vercel AI Gateway — JEV bounded memory-lifecycle decisions (real endpoint,
     # takes priority over the OpenRouter-chat JEV substitute when set)
@@ -35,6 +46,23 @@ class Settings(BaseSettings):
     # graph8 MCP (external intelligence layer)
     g8_api_key: Optional[str] = None
     g8_mcp_mode: str = "dev"
+
+    # LLM call control. The MVP rule is "stop making multiple unnecessary
+    # provider calls", so deterministic repeats are cached and free-tier
+    # congestion is backed off from instead of retried into a 429 storm.
+    memtrace_llm_cache_enabled: bool = True
+    memtrace_llm_cache_ttl_seconds: int = 900
+    memtrace_llm_cache_max_entries: int = 512
+    openrouter_max_rpm: int = 20  # documented free-model per-minute ceiling
+    openrouter_max_backoff_seconds: float = 20.0
+    openrouter_model_cooldown_seconds: float = 90.0
+
+    # Comparison demo databases (docs §3, §5.1, §6.1)
+    postgres_url: Optional[str] = None
+    neo4j_uri: Optional[str] = None
+    neo4j_user: str = "neo4j"
+    neo4j_password: str = "password"
+
 
     # LangSmith Tracing
     langchain_tracing_v2: str = "false"

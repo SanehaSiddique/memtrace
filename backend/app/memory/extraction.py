@@ -160,7 +160,6 @@ _LLM_SYSTEM_PROMPT = (
     '"subject": str, "predicate": str, "object": str, "content": str, "confidence": float}]'
 )
 
-
 async def extract_candidates(
     event: MemoryEvent,
     default_subject: str,
@@ -172,7 +171,7 @@ async def extract_candidates(
             payload = json.loads(_strip_code_fence(raw))
             return [CandidateMemory(**item) for item in payload]
         except Exception:
-            pass  # fall through to deterministic rules
+            pass  # model unavailable/rate-limited/unparseable → deterministic rules
     return _extract_rule_based(event.content, default_subject)
 
 

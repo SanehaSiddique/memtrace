@@ -13,6 +13,12 @@ RUN npm run build
 FROM python:3.14-slim AS runtime
 WORKDIR /app
 
+# Install system dependencies needed for compiling packages if required
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
@@ -21,7 +27,9 @@ COPY --from=frontend-build /app/frontend/dist ./frontend/dist
 
 # Persisted outside the image so data survives container restarts/rebuilds —
 # see the `memtrace_data` volume in docker-compose.yml.
-ENV MEMTRACE_DB_PATH=/data/memtrace.db
+ENV MEMTRACE_DB_PATH=/data/memtrace.db \
+    PYTHONPATH=/app/backend
+
 RUN mkdir -p /data
 VOLUME ["/data"]
 
@@ -29,3 +37,4 @@ WORKDIR /app/backend
 EXPOSE 8000
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+

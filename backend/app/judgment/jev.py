@@ -53,6 +53,31 @@ class JEVMemoryJudge(BaseMemoryJudge):
         existing_active: List[Memory],
         event: MemoryEvent,
     ) -> MemoryJudgment:
+        try:
+            return await self._decide(candidate, existing_active, event)
+        except Exception as exc:
+            # A JEV outage must not fail the whole ingest turn: mirror the AI
+            # Gateway client's behaviour and record the failure in `reason`.
+            return self._fallback(candidate, f"jev_fallback: {type(exc).__name__}")
+
+    def _fallback(self, candidate: CandidateMemory, reason: str) -> MemoryJudgment:
+        return MemoryJudgment(
+            operation=MemoryOperationType.ADD,
+            memory_type=candidate.memory_type,
+            subject=candidate.subject,
+            predicate=candidate.predicate,
+            object=candidate.object,
+            content=candidate.content,
+            confidence=candidate.confidence,
+            reason=reason,
+        )
+
+    async def _decide(
+        self,
+        candidate: CandidateMemory,
+        existing_active: List[Memory],
+        event: MemoryEvent,
+    ) -> MemoryJudgment:
         state = {
             "event_content": event.content,
             "new_fact": {
@@ -82,7 +107,6 @@ class JEVMemoryJudge(BaseMemoryJudge):
         operation = MemoryOperationType(result.choices["operation"].choice)
         memory_type = MemoryType(result.choices["memory_type"].choice)
         confidence = result.choices["operation"].confidence
-
         target_memory_id = None
         relation_to_target = None
         if operation in (MemoryOperationType.UPDATE, MemoryOperationType.MERGE, MemoryOperationType.ARCHIVE, MemoryOperationType.DELETE):

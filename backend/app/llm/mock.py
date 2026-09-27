@@ -15,6 +15,9 @@ from app.llm.interface import BaseLLMClient
 
 class MockLLMClient(BaseLLMClient):
     is_live = False
+    embeddings_are_local = True
+    provider = "mock"
+    model_name = "mock-hashing-embedder"
 
     async def chat(self, system: str, user: str, temperature: float = 0.0) -> str:
         raise NotImplementedError(
