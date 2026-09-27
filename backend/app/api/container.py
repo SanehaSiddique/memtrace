@@ -18,12 +18,21 @@ class AppContainer:
         self.settings = settings
         self.repository: BaseMemoryRepository = SQLiteMemoryRepository(db_path=settings.memtrace_db_path)
         self.llm_client: BaseLLMClient = get_llm_client(settings)
-        self.judge: BaseMemoryJudge = get_memory_judge(settings)
+        self.judge: BaseMemoryJudge = get_memory_judge(settings, self.llm_client)
         self.default_subject = DEFAULT_SUBJECT
         self.memory_service = MemoryService(self.repository, self.llm_client, self.judge, self.default_subject)
         self.ingest_workflow = build_ingest_workflow(self.repository, self.llm_client, self.judge, self.default_subject)
         self.query_workflow = build_query_workflow(self.repository, self.llm_client)
         self.cost_service = CostService(SQLiteCostRepository(db_path=settings.memtrace_db_path))
+
+    @property
+    def active_model_name(self) -> str:
+        """Whichever model is actually answering, for honest cost-pricing lookups —
+        `get_pricing()` falls back to a nonzero default for an unrecognized id, so
+        this must reflect the model actually in use, not always `openai_model`."""
+        if self.settings.openrouter_api_key:
+            return self.settings.openrouter_model
+        return self.settings.openai_model
 
     async def initialize(self) -> None:
         await self.repository.initialize()

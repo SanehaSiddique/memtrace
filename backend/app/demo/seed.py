@@ -59,7 +59,7 @@ async def _main() -> None:
     repository: BaseMemoryRepository = SQLiteMemoryRepository(db_path=settings.memtrace_db_path)
     await repository.initialize()
     llm_client = get_llm_client(settings)
-    judge = get_memory_judge(settings)
+    judge = get_memory_judge(settings, llm_client)
     service = MemoryService(repository, llm_client, judge, default_subject=DEFAULT_SUBJECT)
 
     records = await seed_demo_data(service, agent_id=settings.memtrace_default_agent_id)

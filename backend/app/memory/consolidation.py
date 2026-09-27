@@ -141,6 +141,13 @@ async def apply_operation(
     if judgment.operation == MemoryOperationType.UPDATE and judgment.target_memory_id:
         old_memory = await repository.get_memory(judgment.target_memory_id)
         if old_memory is not None:
+            # Inherit the target's (subject, predicate) rather than whatever the
+            # extractor worded this candidate's as — a live LLM extractor may phrase
+            # the same real-world fact differently turn to turn (e.g. "We" vs "Project
+            # Alpha"); linking is already confirmed semantically by the judge, so this
+            # keeps the lineage keyed consistently without a rule-based normalizer.
+            new_memory.subject = old_memory.subject
+            new_memory.predicate = old_memory.predicate
             old_memory.status = MemoryStatus.HISTORICAL
             old_memory.valid_until = now
             old_memory.superseded_by_memory_id = new_memory.id

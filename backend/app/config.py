@@ -1,19 +1,40 @@
 """Configuration settings for MEMTRACE."""
 
+from pathlib import Path
 from typing import Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Resolve to the repo-root .env regardless of the process's working directory
+# (e.g. `cd backend && uvicorn app.main:app` runs with cwd=backend/).
+_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
+
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(env_file=str(_ENV_FILE), env_file_encoding="utf-8", extra="ignore")
 
     # OpenAI / Compatible LLM
     openai_api_key: Optional[str] = None
     openai_base_url: Optional[str] = None
     openai_model: str = "gpt-4o-mini"
 
+    # OpenRouter (free-tier friendly; takes priority over OPENAI_API_KEY when set)
+    openrouter_api_key: Optional[str] = None
+    openrouter_model: str = "nvidia/nemotron-3-super-120b-a12b:free"
+    openrouter_base_url: Optional[str] = None
+    openrouter_site_url: Optional[str] = None
+    openrouter_app_name: str = "memtrace"
+
     # TypeSafe JEV
     typesafe_api_key: Optional[str] = None
+
+    # Vercel AI Gateway — JEV bounded memory-lifecycle decisions (real endpoint,
+    # takes priority over the OpenRouter-chat JEV substitute when set)
+    ai_gateway_api_key: Optional[str] = None
+    jev_url: str = "https://ai-gateway.vercel.sh/v1/evaluate"
+
+    # graph8 MCP (external intelligence layer)
+    g8_api_key: Optional[str] = None
+    g8_mcp_mode: str = "dev"
 
     # LangSmith Tracing
     langchain_tracing_v2: str = "false"

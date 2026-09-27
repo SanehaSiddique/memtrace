@@ -14,8 +14,9 @@ from app.judgment.interface import BaseMemoryJudge
 from app.llm.interface import BaseLLMClient
 from app.memory.consolidation import apply_operation
 from app.memory.extraction import extract_candidates
-from app.memory.models import MemoryEvent, MemoryOperationRecord, MemoryStatus
+from app.memory.models import MemoryEvent, MemoryOperationRecord
 from app.memory.repository import BaseMemoryRepository
+from app.memory.retrieval import find_linkable_active_memories
 
 DEFAULT_SUBJECT = "Project Alpha"
 
@@ -40,11 +41,14 @@ class MemoryService:
 
         records: List[MemoryOperationRecord] = []
         for candidate in candidates:
-            existing_active = await self.repository.find_existing_memories_by_triple(
-                agent_id=event.agent_id,
-                subject=candidate.subject,
-                predicate=candidate.predicate,
-                status=MemoryStatus.ACTIVE,
+            existing_active = await find_linkable_active_memories(
+                self.repository,
+                self.llm_client,
+                event.agent_id,
+                candidate.subject,
+                candidate.predicate,
+                candidate.object,
+                candidate.content,
             )
             judgment = await self.judge.judge(candidate, existing_active, event)
             record = await apply_operation(self.repository, self.llm_client, judgment, candidate, event)

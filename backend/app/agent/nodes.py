@@ -13,10 +13,10 @@ from app.judgment.interface import BaseMemoryJudge
 from app.llm.interface import BaseLLMClient
 from app.memory.consolidation import apply_operation
 from app.memory.extraction import extract_candidates
-from app.memory.models import MemoryStatus
 from app.memory.repository import BaseMemoryRepository
 from app.memory.retrieval import (
     apply_temporal_filter,
+    find_linkable_active_memories,
     retrieve_semantic,
     score_and_rank,
     traverse_graph,
@@ -138,11 +138,14 @@ def make_judge_and_apply_node(repository: BaseMemoryRepository, llm_client: Base
         event = state["event"]
         operations = []
         for candidate in state["candidates"]:
-            existing_active = await repository.find_existing_memories_by_triple(
-                agent_id=event.agent_id,
-                subject=candidate.subject,
-                predicate=candidate.predicate,
-                status=MemoryStatus.ACTIVE,
+            existing_active = await find_linkable_active_memories(
+                repository,
+                llm_client,
+                event.agent_id,
+                candidate.subject,
+                candidate.predicate,
+                candidate.object,
+                candidate.content,
             )
             judgment = await judge.judge(candidate, existing_active, event)
             record = await apply_operation(repository, llm_client, judgment, candidate, event)
