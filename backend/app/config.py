@@ -47,7 +47,13 @@ class Settings(BaseSettings):
     langchain_project: str = "memtrace-hackathon"
     langchain_endpoint: str = "https://api.smith.langchain.com"
 
-    # Persistence
+    # Neo4j persistence (required outside tests)
+    neo4j_uri: Optional[str] = None
+    neo4j_username: Optional[str] = None
+    neo4j_password: Optional[str] = None
+    neo4j_database: str = "neo4j"
+
+    # SQLite is retained only as a lightweight test adapter.
     memtrace_db_path: str = "memtrace.db"
     memtrace_env: str = "development"
     memtrace_default_agent_id: str = "agent-alpha"

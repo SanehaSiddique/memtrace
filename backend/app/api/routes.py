@@ -1,6 +1,7 @@
 """FastAPI routes. Thin: every handler just adapts HTTP <-> the workflows,
 services, and repository already built and tested below the API layer."""
 
+import logging
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, Request
@@ -17,6 +18,7 @@ from app.memory.retrieval import baseline_semantic_retrieve, hybrid_retrieve
 from langsmith.run_helpers import get_current_run_tree, traceable
 
 router = APIRouter()
+logger = logging.getLogger("uvicorn.error")
 
 
 def _container(request: Request) -> AppContainer:
@@ -78,6 +80,7 @@ async def memory_graph_full(request: Request, agent_id: Optional[str] = None):
             edges_by_id[rel.id] = rel
 
     return {
+        "storage": "neo4j" if container.repository.__class__.__name__.startswith("Neo4j") else "test-adapter",
         "nodes": [m.model_dump(mode="json") for m in memories],
         "edges": [r.model_dump(mode="json") for r in edges_by_id.values()],
     }
@@ -122,23 +125,40 @@ async def chat(body: ChatRequest, request: Request):
     container = _container(request)
     agent_id = resolve_agent_id(body.agent_id)
 
-    event = MemoryEvent(
-        conversation_id=body.conversation_id,
-        agent_id=agent_id,
-        speaker=body.speaker,
-        content=body.message,
-    )
-    ingest_result = await container.ingest_workflow.ainvoke({"event": event})
-    await _record_lifecycle_impacts(container, agent_id, ingest_result["operations"])
-
+    # Answering is independent from memory writes: a JEV/provider outage must
+    # never prevent the general assistant from replying through the live LLM.
     query_result = await container.query_workflow.ainvoke(
         {
             "query": body.message,
             "conversation_id": body.conversation_id,
             "agent_id": agent_id,
-            "recent_messages": [],
+            "recent_messages": body.recent_messages,
         }
     )
+
+    memory_operations = []
+    memory_status = "skipped"
+    memory_error = None
+    if body.remember:
+        event = MemoryEvent(
+            conversation_id=body.conversation_id,
+            agent_id=agent_id,
+            speaker=body.speaker,
+            content=body.message,
+        )
+        try:
+            ingest_result = await container.ingest_workflow.ainvoke({"event": event})
+            memory_operations = ingest_result["operations"]
+            await _record_lifecycle_impacts(container, agent_id, memory_operations)
+            memory_status = "saved"
+        except Exception:
+            memory_status = "failed"
+            memory_error = "The assistant answered, but this message could not be saved to memory."
+            logger.exception(
+                "[memtrace.memory] write.error agent_id=%s conversation_id=%s",
+                agent_id,
+                body.conversation_id,
+            )
 
     run_record = await container.cost_service.record_run(
         agent_id=agent_id,
@@ -153,7 +173,9 @@ async def chat(body: ChatRequest, request: Request):
 
     return {
         "answer": query_result["answer"],
-        "memory_operations": [op.model_dump(mode="json") for op in ingest_result["operations"]],
+        "memory_operations": [op.model_dump(mode="json") for op in memory_operations],
+        "memory_status": memory_status,
+        "memory_error": memory_error,
         "selected_memories": [sm.model_dump(mode="json") for sm in query_result["selected_memories"]],
         "excluded_memories": [em.model_dump(mode="json") for em in query_result["excluded_memories"]],
         "trace_metadata": query_result["trace_metadata"],

@@ -4,7 +4,7 @@ old decisions that get superseded, a rejected alternative, a decision still
 under consideration, and one deliberately vague statement that should land in
 PENDING_REVIEW rather than ACTIVE.
 
-Run directly (`python -m app.demo.seed`) to (re)populate MEMTRACE_DB_PATH.
+Run directly (`python -m app.demo.seed`) to populate the configured Neo4j database.
 """
 
 import asyncio
@@ -15,7 +15,8 @@ from app.config import settings
 from app.judgment.factory import get_memory_judge
 from app.llm.factory import get_llm_client
 from app.memory.models import MemoryEvent, MemoryOperationRecord
-from app.memory.repository import BaseMemoryRepository, SQLiteMemoryRepository
+from app.memory.factory import get_memory_repository
+from app.memory.repository import BaseMemoryRepository
 from app.memory.service import DEFAULT_SUBJECT, MemoryService
 
 _START = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -56,7 +57,7 @@ async def seed_demo_data(
 
 
 async def _main() -> None:
-    repository: BaseMemoryRepository = SQLiteMemoryRepository(db_path=settings.memtrace_db_path)
+    repository: BaseMemoryRepository = get_memory_repository(settings)
     await repository.initialize()
     llm_client = get_llm_client(settings)
     judge = get_memory_judge(settings, llm_client)
@@ -65,6 +66,7 @@ async def _main() -> None:
     records = await seed_demo_data(service, agent_id=settings.memtrace_default_agent_id)
     for record in records:
         print(f"{record.operation.value:8s} memory={record.memory_id} target={record.target_memory_id} reason={record.reason}")
+    await repository.close()
 
 
 if __name__ == "__main__":

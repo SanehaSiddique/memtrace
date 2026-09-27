@@ -1,14 +1,15 @@
 """JEV via the real Vercel AI Gateway `/v1/evaluate` endpoint.
 
-Confirmed live (see JEV_URL): this endpoint speaks the exact same "System One"
-wire contract TypeSafe's own SDK uses (`state` + `questions`, answers keyed by
-question name with `.choice`/`.confidence`) — just gateway-hosted under
-`model: "typesafe-ai/jev"` with a Bearer AI_GATEWAY_API_KEY
-instead of TYPESAFE_API_KEY. So this reuses the exact same bounded
+This endpoint accepts TypeSafe's System One shape (`state` + `questions`) and
+returns typed answers keyed by question name, including choice probabilities.
+It uses `model: "typesafe-ai/jev"` with a Bearer AI_GATEWAY_API_KEY instead of
+TYPESAFE_API_KEY. So this reuses the exact same bounded
 operation/memory_type criteria `JEVMemoryJudge` already authored, just over a
 plain httpx POST instead of the typesafe_sdk client.
 """
 
+import logging
+import time
 from typing import List
 
 import httpx
@@ -26,6 +27,7 @@ from app.memory.models import (
 )
 
 JEV_MODEL = "typesafe-ai/jev"
+logger = logging.getLogger("uvicorn.error")
 
 
 def _choice_question(instructions: str, criteria: dict) -> dict:
@@ -50,14 +52,45 @@ class AIGatewayJEVClient(BaseMemoryJudge):
         Provider failures propagate so callers never mistake a fabricated
         fallback for a real judgment.
         """
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
-            response = await client.post(
-                self._url,
-                headers=self._headers(),
-                json={"model": self._model, "state": state, "questions": questions},
+        started = time.perf_counter()
+        logger.info(
+            "[memtrace.jev] evaluate.start provider=vercel-ai-gateway model=%s questions=%s",
+            self._model,
+            len(questions),
+        )
+        try:
+            async with httpx.AsyncClient(timeout=self._timeout) as client:
+                response = await client.post(
+                    self._url,
+                    headers=self._headers(),
+                    json={"model": self._model, "state": state, "questions": questions},
+                )
+                response.raise_for_status()
+                result = response.json()
+        except httpx.HTTPStatusError as exc:
+            logger.exception(
+                "[memtrace.jev] evaluate.error provider=vercel-ai-gateway model=%s status=%s elapsed_ms=%.1f",
+                self._model,
+                exc.response.status_code,
+                (time.perf_counter() - started) * 1000,
             )
-            response.raise_for_status()
-            return response.json()
+            raise
+        except Exception:
+            logger.exception(
+                "[memtrace.jev] evaluate.error provider=vercel-ai-gateway model=%s elapsed_ms=%.1f",
+                self._model,
+                (time.perf_counter() - started) * 1000,
+            )
+            raise
+
+        logger.info(
+            "[memtrace.jev] evaluate.complete provider=vercel-ai-gateway model=%s status=%s elapsed_ms=%.1f answers=%s",
+            result.get("model", self._model),
+            response.status_code,
+            (time.perf_counter() - started) * 1000,
+            len(result.get("answers", {})),
+        )
+        return result
 
     async def judge(
         self,

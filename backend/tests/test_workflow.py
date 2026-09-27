@@ -3,11 +3,21 @@ MongoDB -> PostgreSQL scenario, end to end."""
 
 import pytest
 
+from app.agent.nodes import make_generate_response_node
 from app.agent.workflow import build_ingest_workflow, build_query_workflow
+from app.context.builder import build_context
 from app.judgment.mock import MockMemoryJudge
 from app.llm.mock import MockLLMClient
 from app.memory.models import MemoryEvent, MemoryOperationType
 from app.memory.repository import SQLiteMemoryRepository
+
+
+class GeneralHelperLLM(MockLLMClient):
+    async def chat(self, system: str, user: str, temperature: float = 0.0) -> str:
+        assert "general-purpose personal assistant" in system
+        assert "answer from general knowledge" in system
+        assert "(no memory met" in user
+        return "Paris is the capital of France."
 
 
 @pytest.mark.asyncio
@@ -48,3 +58,20 @@ async def test_ingest_then_query_workflow(tmp_path):
     assert "MongoDB" in excluded_objects
     assert result["context"].token_estimate > 0
     assert result["trace_metadata"]["selected_memory_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_answer_node_handles_general_questions_without_memory():
+    node = make_generate_response_node(GeneralHelperLLM())
+    result = await node(
+        {
+            "context": build_context("What is the capital of France?", [], []),
+            "selected_memories": [],
+            "excluded_memories": [],
+            "agent_id": "agent-alpha",
+            "conversation_id": "conversation-1",
+        }
+    )
+
+    assert result["answer"] == "Paris is the capital of France."
+    assert result["trace_metadata"]["selected_memory_count"] == 0

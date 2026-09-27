@@ -9,6 +9,14 @@ class BaseLLMClient(ABC):
 
     is_live: bool = False
 
+    @property
+    def provider_name(self) -> str:
+        return "unknown"
+
+    @property
+    def model_name(self) -> str:
+        return "unknown"
+
     @abstractmethod
     async def chat(self, system: str, user: str, temperature: float = 0.0) -> str: ...
 

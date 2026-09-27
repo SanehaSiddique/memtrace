@@ -1,9 +1,9 @@
-"""Memory and Graph repository interface and SQLite backing implementation.
+"""Memory and graph repository interface plus the test-only SQLite adapter.
 
 This is the single seam between the rest of MEMTRACE (LangGraph nodes, services,
 retrieval, context building) and the underlying storage engine. Everything above
-this layer depends only on `BaseMemoryRepository`, so Postgres/Neo4j can replace
-SQLite later without touching callers.
+this layer depends only on `BaseMemoryRepository`. Production uses Neo4j;
+SQLite remains a lightweight hermetic adapter for unit tests.
 """
 
 from abc import ABC, abstractmethod
@@ -35,6 +35,9 @@ class BaseMemoryRepository(ABC):
 
     @abstractmethod
     async def initialize(self) -> None: ...
+
+    async def close(self) -> None:
+        """Release repository resources. Stateless adapters need no cleanup."""
 
     @abstractmethod
     async def save_event(self, event: MemoryEvent) -> MemoryEvent: ...
