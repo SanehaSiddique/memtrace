@@ -37,9 +37,19 @@ from app.core.tracing import child_trace
 # injects all 50 schemas into every reasoning call unconditionally, Agent2's
 # JEV routing (agent2/tool_routing.py) narrows it to at most one per turn.
 # Picking between 3 tools proved nothing; picking correctly out of 50 does.
+#
+# g8_find_contacts/g8_find_companies were dropped from this registry: both
+# have a *required* `filters` parameter typed as a bare array of untyped
+# objects (`{"type": "array", "items": {"type": "object", "additionalProperties":
+# true}}`) — no nested properties, no description, no example anywhere in the
+# schema graph8 itself publishes. The model has no way to know what a filter
+# object should contain, so calls to either tool reliably 422 ("Request
+# validation failed"). Confirmed the trimming in `to_openai_schema()` isn't
+# the cause — the raw, untrimmed schema is identical. Replaced with two
+# tools that have fully concrete, unambiguous parameter schemas.
 CONTACTS_TOOL_NAMES = [
     "g8_search_contacts",
-    "g8_find_contacts",
+    "g8_create_note",
     "g8_lookup_person",
     "g8_get_contact_detail",
     "g8_create_contact",
@@ -62,7 +72,7 @@ CONTACTS_TOOL_NAMES = [
 
 COMPANIES_DEALS_TOOL_NAMES = [
     "g8_search_companies",
-    "g8_find_companies",
+    "g8_get_quote",
     "g8_lookup_company",
     "g8_crm_get_company",
     "g8_create_company",
