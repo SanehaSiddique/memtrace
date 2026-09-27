@@ -46,11 +46,6 @@ class Settings(BaseSettings):
     # graph8 MCP (external intelligence layer)
     g8_api_key: Optional[str] = None
     g8_mcp_mode: str = "dev"
-    g8_mcp_url: str = "https://be.graph8.com/mcp/"
-    # The public demo API has no authentication of its own. Keep Graph8 writes,
-    # billable operations, and destructive tools disabled unless the operator
-    # deliberately opts in after putting suitable access controls in front of it.
-    g8_mcp_allow_mutations: bool = False
 
     # LLM call control. The MVP rule is "stop making multiple unnecessary
     # provider calls", so deterministic repeats are cached and free-tier
@@ -75,13 +70,7 @@ class Settings(BaseSettings):
     langchain_project: str = "memtrace-hackathon"
     langchain_endpoint: str = "https://api.smith.langchain.com"
 
-    # Neo4j persistence (required outside tests)
-    neo4j_uri: Optional[str] = None
-    neo4j_username: Optional[str] = None
-    neo4j_password: Optional[str] = None
-    neo4j_database: str = "neo4j"
-
-    # SQLite is retained only as a lightweight test adapter.
+    # Persistence
     memtrace_db_path: str = "memtrace.db"
     memtrace_env: str = "development"
     memtrace_default_agent_id: str = "agent-alpha"

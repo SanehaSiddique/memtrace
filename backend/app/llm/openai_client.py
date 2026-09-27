@@ -11,8 +11,6 @@ from app.llm.errors import LLMRateLimitedError
 from app.llm.interface import BaseLLMClient, ChatCompletion
 from app.llm.wire import StreamRateLimited, parse_chat_completion, stream_chat_completion
 
-logger = logging.getLogger("uvicorn.error")
-
 
 class OpenAICompatibleLLMClient(BaseLLMClient):
     is_live = True
@@ -36,14 +34,6 @@ class OpenAICompatibleLLMClient(BaseLLMClient):
         # Mirrors OpenRouterLLMClient so the same counters work for both.
         self.provider_call_count = 0
         self.rate_limit_events = 0
-
-    @property
-    def provider_name(self) -> str:
-        return "openai"
-
-    @property
-    def model_name(self) -> str:
-        return self._model
 
     def _headers(self) -> dict:
         return {"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"}
@@ -117,20 +107,6 @@ class OpenAICompatibleLLMClient(BaseLLMClient):
                 headers=self._headers(),
                 json={"model": self._embedding_model, "input": text},
             )
-            raise
-        except Exception:
-            logger.exception(
-                "[memtrace.llm] embed.error provider=openai model=%s elapsed_ms=%.1f",
-                self._embedding_model,
-                (time.perf_counter() - started) * 1000,
-            )
-            raise
-
-        logger.info(
-            "[memtrace.llm] embed.complete provider=openai model=%s status=%s elapsed_ms=%.1f dimensions=%s",
-            self._embedding_model,
-            response.status_code,
-            (time.perf_counter() - started) * 1000,
-            len(embedding),
-        )
-        return embedding
+            response.raise_for_status()
+            data = response.json()
+            return data["data"][0]["embedding"]

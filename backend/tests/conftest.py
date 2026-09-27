@@ -1,10 +1,11 @@
-"""Keep tests hermetic by injecting explicit doubles at the API boundary."""
+"""Keep the test suite hermetic and deterministic regardless of whatever
+live provider keys happen to be configured in .env — tests exercise the
+built-in fallback logic, not real network calls to a real LLM provider.
+"""
 
 import pytest
 
-from app.judgment.mock import MockMemoryJudge
-from app.llm.mock import MockLLMClient
-from app.memory.repository import SQLiteMemoryRepository
+from app.config import settings
 
 
 @pytest.fixture(autouse=True)

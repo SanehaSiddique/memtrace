@@ -2,6 +2,7 @@ from app.config import Settings
 from app.llm.counted import CountedLLMClient
 from app.llm.groq_client import GroqLLMClient
 from app.llm.interface import BaseLLMClient
+from app.llm.mock import MockLLMClient
 from app.llm.openai_client import OpenAICompatibleLLMClient
 from app.llm.openrouter_client import OpenRouterLLMClient
 

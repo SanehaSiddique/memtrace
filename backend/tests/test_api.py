@@ -209,24 +209,11 @@ def test_ingest_then_query_then_debug(client):
     assert "baseline" in r8.json() and "memtrace" in r8.json()
 
 
-def test_chat_answers_without_implicitly_writing_memory(client):
-    response = client.post("/agent/chat", json={"message": "What can you help me with?"})
+def test_chat_ingests_and_answers(client):
+    response = client.post("/agent/chat", json={"message": "Project Alpha uses Redis for caching."})
     assert response.status_code == 200
     body = response.json()
-    assert body["answer"]
-    assert body["memory_status"] == "skipped"
-    assert body["memory_operations"] == []
-
-
-def test_chat_can_explicitly_remember_and_answer(client):
-    response = client.post(
-        "/agent/chat",
-        json={"message": "Project Alpha uses Redis for caching.", "remember": True},
-    )
-    assert response.status_code == 200
-    body = response.json()
-    assert body["answer"]
-    assert body["memory_status"] == "saved"
+    assert "Redis" in body["answer"]
     assert len(body["memory_operations"]) == 1
 
 

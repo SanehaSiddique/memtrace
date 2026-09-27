@@ -140,14 +140,6 @@ class OpenRouterLLMClient(BaseLLMClient):
         self.provider_call_count = 0
         self.rate_limit_events = 0
 
-    @property
-    def provider_name(self) -> str:
-        return "openrouter"
-
-    @property
-    def model_name(self) -> str:
-        return self._model
-
     def _headers(self) -> dict:
         headers = {"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"}
         # Optional attribution headers OpenRouter uses for its public leaderboard;
