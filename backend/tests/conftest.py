@@ -4,6 +4,7 @@ import pytest
 
 from app.judgment.mock import MockMemoryJudge
 from app.llm.mock import MockLLMClient
+from app.memory.repository import SQLiteMemoryRepository
 
 
 @pytest.fixture(autouse=True)
@@ -12,3 +13,8 @@ def _inject_test_doubles(monkeypatch):
 
     monkeypatch.setattr(container_module, "get_llm_client", lambda _settings: MockLLMClient())
     monkeypatch.setattr(container_module, "get_memory_judge", lambda _settings, _llm: MockMemoryJudge())
+    monkeypatch.setattr(
+        container_module,
+        "get_memory_repository",
+        lambda test_settings: SQLiteMemoryRepository(test_settings.memtrace_db_path),
+    )

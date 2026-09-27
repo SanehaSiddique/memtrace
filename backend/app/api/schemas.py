@@ -21,6 +21,8 @@ class ChatRequest(BaseModel):
     conversation_id: str = "default_conversation"
     agent_id: Optional[str] = None
     speaker: str = "user"
+    remember: bool = False
+    recent_messages: List[str] = Field(default_factory=list)
 
 
 class QueryRequest(BaseModel):

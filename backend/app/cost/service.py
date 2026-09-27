@@ -26,7 +26,6 @@ from app.cost.models import (
     empty_summary,
 )
 from app.cost.pricing import get_pricing
-from app.cost.repository import SQLiteCostRepository
 from app.memory.models import ExcludedMemory, ScoredMemory
 
 
@@ -65,7 +64,7 @@ def _bucket_key_fn(granularity: str):
 
 
 class CostService:
-    def __init__(self, repository: SQLiteCostRepository) -> None:
+    def __init__(self, repository) -> None:
         self.repository = repository
 
     async def initialize(self) -> None:
