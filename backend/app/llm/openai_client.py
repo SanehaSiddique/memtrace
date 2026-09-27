@@ -3,13 +3,13 @@
 OPENAI_BASE_URL. No official `openai` SDK dependency required.
 """
 
-from typing import List, Optional, Tuple
+from typing import Awaitable, Callable, List, Optional, Tuple
 
 import httpx
 
 from app.llm.errors import LLMRateLimitedError
 from app.llm.interface import BaseLLMClient, ChatCompletion
-from app.llm.wire import parse_chat_completion
+from app.llm.wire import StreamRateLimited, parse_chat_completion, stream_chat_completion
 
 
 class OpenAICompatibleLLMClient(BaseLLMClient):
@@ -73,6 +73,31 @@ class OpenAICompatibleLLMClient(BaseLLMClient):
             response.raise_for_status()
             data = response.json()
         return parse_chat_completion(data, fallback_model=str(payload["model"]))
+
+    async def chat_completion_stream(
+        self,
+        messages: List[dict],
+        tools: Optional[List[dict]] = None,
+        temperature: float = 0.0,
+        model: Optional[str] = None,
+        on_token: Optional[Callable[[str], Awaitable[None]]] = None,
+    ) -> ChatCompletion:
+        chosen_model = model or self._model
+        self.provider_call_count += 1
+        payload: dict = {"model": chosen_model, "temperature": temperature, "messages": messages}
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
+        async with httpx.AsyncClient(timeout=30.0, transport=self._transport) as client:
+            try:
+                return await stream_chat_completion(
+                    client, f"{self._base_url}/chat/completions", self._headers(), payload, chosen_model, on_token
+                )
+            except StreamRateLimited as exc:
+                self.rate_limit_events += 1
+                raise LLMRateLimitedError(
+                    f"{chosen_model} is rate-limited (HTTP 429)", exc.retry_after_seconds
+                ) from exc
 
     async def embed(self, text: str) -> List[float]:
         self.provider_call_count += 1

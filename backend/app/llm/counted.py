@@ -19,7 +19,7 @@ know it is there.
 """
 
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from app.llm.cache import DEFAULT_MAX_ENTRIES, DEFAULT_TTL_SECONDS, TTLCache, make_key
 from app.llm.interface import BaseLLMClient, ChatCompletion
@@ -170,6 +170,65 @@ class CountedLLMClient(BaseLLMClient):
         try:
             completion = await self._inner.chat_completion(
                 messages, tools=tools, temperature=temperature, model=model
+            )
+        except Exception:
+            self._record_latency(started)
+            self._record_provider_calls(provider_before)
+            self._record_rate_limit_events()
+            self._counters["chat_errors"] += 1
+            raise
+
+        self._record_latency(started)
+        self._record_provider_calls(provider_before)
+        self._record_rate_limit_events()
+
+        if completion.model:
+            models_used = self._counters["models_used"]
+            models_used[completion.model] = models_used.get(completion.model, 0) + 1
+        self._counters["tokens_in"] += _as_int(completion.usage, "prompt_tokens", "input_tokens")
+        self._counters["tokens_out"] += _as_int(completion.usage, "completion_tokens", "output_tokens")
+
+        if self._cache_enabled:
+            self._chat_cache.set(key, completion)
+        return completion
+
+    async def chat_completion_stream(
+        self,
+        messages: List[dict],
+        tools: Optional[List[dict]] = None,
+        temperature: float = 0.0,
+        model: Optional[str] = None,
+        on_token: Optional[Callable[[str], Awaitable[None]]] = None,
+    ) -> ChatCompletion:
+        """Forwards to the wrapped provider's real streaming implementation —
+        without this override, `CountedLLMClient` (which wraps every live
+        provider per `llm/factory.py`) would silently fall back to
+        `BaseLLMClient`'s non-streaming default, discarding the providers'
+        actual SSE streaming and replaying the answer as one giant "token"."""
+        import json
+
+        key = make_key(
+            self.model_name,
+            "chat_completion",
+            model or "auto",
+            f"{temperature}",
+            json.dumps(messages, sort_keys=True, default=str),
+            json.dumps(tools or [], sort_keys=True, default=str),
+        )
+        if self._cache_enabled:
+            hit, cached = self._chat_cache.get(key)
+            if hit and isinstance(cached, ChatCompletion):
+                self._counters["chat_cache_hits"] += 1
+                if on_token and cached.content:
+                    await on_token(cached.content)
+                return cached
+
+        self._counters["chat_calls"] += 1
+        provider_before = self._provider_call_count()
+        started = time.monotonic()
+        try:
+            completion = await self._inner.chat_completion_stream(
+                messages, tools=tools, temperature=temperature, model=model, on_token=on_token
             )
         except Exception:
             self._record_latency(started)

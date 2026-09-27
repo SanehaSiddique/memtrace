@@ -124,7 +124,10 @@ export default function DualAgentComparisonView({ sessionId = "default_session" 
             return updated;
           });
         }
-      } else if (event.event === "graph") {
+      } else if (event.event === "graph" || event.event === "graph_updated") {
+        // "graph_updated" fires once agent2's decoupled fact-extraction/staleness/
+        // write finishes in the background (docs/IMPLEMENTATION_V2.md §4.2) — same
+        // refetch-trigger as "graph", just arriving later, after the write lands.
         setGraphSignal((n) => n + 1);
       } else if (event.event === "summary") {
         setSessionSummary(event.data);

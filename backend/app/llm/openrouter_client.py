@@ -32,14 +32,19 @@ This client now behaves like a well-mannered free-tier citizen:
 
 import asyncio
 import time
-from typing import List, Optional, Tuple
+from typing import Awaitable, Callable, List, Optional, Tuple
 
 import httpx
 
 from app.llm.errors import LLMRateLimitedError
 from app.llm.hashing import hash_embed
 from app.llm.interface import BaseLLMClient, ChatCompletion
-from app.llm.wire import parse_chat_completion
+from app.llm.wire import (
+    StreamRateLimited,
+    parse_chat_completion,
+    seconds_from_retry_after,
+    stream_chat_completion,
+)
 
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_TIMEOUT_SECONDS = 30.0
@@ -82,22 +87,6 @@ _next_request_at: float = 0.0
 _rate_limit_events: int = 0
 _last_rate_limit: Optional[dict] = None
 _key_status_cache: Tuple[float, Optional[dict]] = (0.0, None)
-
-
-def _seconds_from_retry_after(value: Optional[str]) -> Optional[float]:
-    """`Retry-After` is either delta-seconds or an HTTP date."""
-    if not value:
-        return None
-    try:
-        return max(0.0, float(value.strip()))
-    except ValueError:
-        pass
-    try:
-        from email.utils import parsedate_to_datetime
-
-        return max(0.0, parsedate_to_datetime(value).timestamp() - time.time())
-    except Exception:
-        return None
 
 
 def _earliest_cooldown_seconds() -> Optional[float]:
@@ -291,7 +280,7 @@ class OpenRouterLLMClient(BaseLLMClient):
         if response.status_code == 429:
             raise _AttemptRateLimited(
                 f"{model} is rate-limited (HTTP 429)",
-                _seconds_from_retry_after(response.headers.get("Retry-After")),
+                seconds_from_retry_after(response.headers.get("Retry-After")),
             )
         response.raise_for_status()
         data = response.json()
@@ -306,6 +295,37 @@ class OpenRouterLLMClient(BaseLLMClient):
                 raise _AttemptRateLimited(f"{model} is congested ({error})")
             raise RuntimeError(f"OpenRouter error for {model}: {error}")
         return parse_chat_completion(data, fallback_model=model)
+
+    async def chat_completion_stream(
+        self,
+        messages: List[dict],
+        tools: Optional[List[dict]] = None,
+        temperature: float = 0.0,
+        model: Optional[str] = None,
+        on_token: Optional[Callable[[str], Awaitable[None]]] = None,
+    ) -> ChatCompletion:
+        """Streaming counterpart to `chat_completion` — same candidate-model
+        ordering, cooldown, and backoff via `_completion_with_fallback`; only
+        how each attempt is made (streamed vs one-shot) differs."""
+        candidates = [model] if model else None
+
+        async def _attempt(candidate: str) -> ChatCompletion:
+            self.provider_call_count += 1
+            payload: dict = {"model": candidate, "temperature": temperature, "messages": messages}
+            if tools:
+                payload["tools"] = tools
+                payload["tool_choice"] = "auto"
+            async with httpx.AsyncClient(timeout=self._timeout, transport=self._transport) as client:
+                try:
+                    return await stream_chat_completion(
+                        client, f"{self._base_url}/chat/completions", self._headers(), payload, candidate, on_token
+                    )
+                except StreamRateLimited as exc:
+                    raise _AttemptRateLimited(
+                        f"{candidate} is rate-limited (HTTP 429)", exc.retry_after_seconds
+                    ) from exc
+
+        return await self._completion_with_fallback(_attempt, candidates=candidates)
 
     async def _post_chat(self, model: str, system: str, user: str, temperature: float) -> ChatCompletion:
         """Back-compat shim: the plain (system, user) call as a ChatCompletion."""

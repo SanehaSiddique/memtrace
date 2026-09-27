@@ -82,6 +82,19 @@ class SessionMetricsStore:
     def record_turn(self, metrics: TurnMetrics) -> None:
         self._metrics.setdefault(metrics.session_id, []).append(metrics)
 
+    def record_graph_write(
+        self, session_id: str, run_group_id: str, latency_ms: float, jev_calls: int
+    ) -> None:
+        """Back-fill a turn's background graph-write cost (§4.3) once the
+        decoupled task finishes — arrives after `record_turn` already stored
+        this turn's response-critical metrics, so it's a targeted update, not
+        a new record."""
+        for turn in self._metrics.get(session_id, []):
+            if turn.run_group_id == run_group_id and turn.agent_id == "agent2":
+                turn.graph_write_latency_ms = round(latency_ms, 2)
+                turn.graph_write_jev_calls = jev_calls
+                return
+
     def get_session_turns(self, session_id: str) -> List[TurnMetrics]:
         return list(self._metrics.get(session_id, []))
 

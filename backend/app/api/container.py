@@ -49,10 +49,16 @@ class AppContainer:
             api_key=settings.g8_api_key,
             mode=settings.g8_mcp_mode,
         )
-        self.jev_client = JEVClient(
-            api_key=settings.ai_gateway_api_key or settings.typesafe_api_key,
-            url=settings.jev_url,
-        )
+        # JEV_API_KEY (jevtypesafeai.com directly) is the confirmed-working paid
+        # endpoint (see judgment/jev_live.py) — prefer it over the Vercel AI
+        # Gateway substitute, whose free tier doesn't have "jev" model access.
+        if settings.jev_api_key:
+            self.jev_client = JEVClient(api_key=settings.jev_api_key, url=settings.jev_decide_url)
+        else:
+            self.jev_client = JEVClient(
+                api_key=settings.ai_gateway_api_key or settings.typesafe_api_key,
+                url=settings.jev_url,
+            )
 
         # Stores & Agents
         self.facts_store: Optional[FactsStore] = None

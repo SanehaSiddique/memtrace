@@ -20,14 +20,25 @@ Failures never masquerade as answers: when no provider can serve the request,
 records the failure in that turn's metrics.
 """
 
+import asyncio
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from app.core.tracing import child_trace
 from app.llm.cache import DEFAULT_MAX_ENTRIES, DEFAULT_TTL_SECONDS, TTLCache, make_key
-from app.llm.errors import LLMUnavailableError
+from app.llm.errors import LLMRateLimitedError, LLMUnavailableError
 from app.llm.interface import BaseLLMClient, ChatCompletion, ToolCall
+
+# A provider hitting a transient 429 mid-turn must not silently blank out the
+# answer (only Agent2's extra JEV round-trips make this common, since both
+# agents fire concurrent requests at the same shared provider). Retry a couple
+# times with backoff before treating the provider as exhausted for this call —
+# OpenRouterLLMClient already does its own cooldown/backoff internally, so
+# this mostly protects providers (e.g. Groq) that raise straight through.
+_RATE_LIMIT_MAX_RETRIES = 2
+_RATE_LIMIT_BASE_BACKOFF_SECONDS = 1.5
+_RATE_LIMIT_MAX_BACKOFF_SECONDS = 8.0
 
 
 @dataclass
@@ -166,8 +177,8 @@ class LLMClient:
             for provider in self._providers:
                 before = getattr(provider, "provider_call_count", None)
                 try:
-                    completion: ChatCompletion = await provider.chat_completion(
-                        messages, tools=tools, temperature=temperature, model=model
+                    completion: ChatCompletion = await self._chat_completion_with_retry(
+                        provider, messages, tools=tools, temperature=temperature, model=model
                     )
                 except LLMUnavailableError as exc:
                     errors.append(f"{provider.provider}: {exc}")
@@ -206,6 +217,138 @@ class LLMClient:
             self._bump_call_type(call_type, "errors")
             detail = " | ".join(errors) or "no provider configured"
             raise LLMUnavailableError(f"No LLM provider could answer this call ({detail})")
+
+    async def chat_stream(
+        self,
+        messages: List[dict],
+        tools: Optional[List[dict]] = None,
+        model: Optional[str] = None,
+        temperature: float = 0.0,
+        agent_id: str = "",
+        call_type: str = "final_answer",
+        run_group_id: str = "",
+        on_token: Optional[Callable[[str], Awaitable[None]]] = None,
+    ) -> LLMResponse:
+        """Streaming counterpart to `chat()` (docs/IMPLEMENTATION_V2.md §5.2
+        `llm_final_answer_token`): calls `on_token` for each content delta as it
+        arrives. Same cache, provider fallback, rate-limit retry, and accounting
+        as `chat()` — streaming only changes how content is delivered while the
+        call is in flight, never what gets counted afterward."""
+        started = time.perf_counter()
+        self._counters["logical_calls"] += 1
+        self._bump_call_type(call_type, "logical_calls")
+
+        key = _cache_key(model, messages, tools, temperature)
+        if self._cache_enabled:
+            hit, cached = self._cache.get(key)
+            if hit and isinstance(cached, LLMResponse):
+                self._counters["cache_hits"] += 1
+                self._bump_call_type(call_type, "cache_hits")
+                if on_token and cached.content:
+                    await on_token(cached.content)
+                return LLMResponse(**{**cached.__dict__, "cache_hit": True})
+
+        errors: List[str] = []
+        with child_trace(
+            name=f"llm.{call_type}",
+            run_type="llm",
+            agent_id=agent_id,
+            run_group_id=run_group_id,
+            component="llm",
+            call_type=call_type,
+            metadata={
+                "tools_in_prompt": len(tools or []),
+                "tool_names": [(t.get("function") or {}).get("name") for t in (tools or [])],
+                "messages": len(messages),
+                "requested_model": model or "auto",
+                "providers": self.provider_names(),
+                "streaming": True,
+            },
+        ) as run:
+            for provider in self._providers:
+                before = getattr(provider, "provider_call_count", None)
+                try:
+                    completion: ChatCompletion = await self._chat_completion_stream_with_retry(
+                        provider, messages, tools=tools, temperature=temperature, model=model, on_token=on_token
+                    )
+                except LLMUnavailableError as exc:
+                    errors.append(f"{provider.provider}: {exc}")
+                    continue
+                except Exception as exc:  # provider bug/parse failure: try the next provider
+                    errors.append(f"{provider.provider}: {type(exc).__name__}: {exc}")
+                    continue
+
+                response = LLMResponse(
+                    content=completion.content,
+                    tool_calls=list(completion.tool_calls),
+                    usage=LLMUsage.from_provider(completion.usage),
+                    latency_ms=round((time.perf_counter() - started) * 1000, 2),
+                    model=completion.model or getattr(provider, "model_name", ""),
+                    provider=getattr(provider, "provider", type(provider).__name__),
+                    cache_hit=False,
+                    provider_calls=self._provider_delta(provider, before),
+                )
+                self._record_success(response, call_type)
+                if self._cache_enabled:
+                    self._cache.set(key, response)
+                try:
+                    run.outputs = {
+                        "content_chars": len(response.content),
+                        "tool_calls": response.tool_call_names,
+                        "prompt_tokens": response.usage.prompt_tokens,
+                        "completion_tokens": response.usage.completion_tokens,
+                        "model": response.model,
+                        "provider": response.provider,
+                    }
+                except Exception:
+                    pass  # tracing must never break a real call
+                return response
+
+            self._counters["errors"] += 1
+            self._bump_call_type(call_type, "errors")
+            detail = " | ".join(errors) or "no provider configured"
+            raise LLMUnavailableError(f"No LLM provider could answer this call ({detail})")
+
+    async def _chat_completion_with_retry(
+        self,
+        provider: BaseLLMClient,
+        messages: List[dict],
+        tools: Optional[List[dict]],
+        temperature: float,
+        model: Optional[str],
+    ) -> ChatCompletion:
+        """Retry the same provider on a transient rate limit before giving up on it."""
+        return await self._with_rate_limit_retry(
+            lambda: provider.chat_completion(messages, tools=tools, temperature=temperature, model=model)
+        )
+
+    async def _chat_completion_stream_with_retry(
+        self,
+        provider: BaseLLMClient,
+        messages: List[dict],
+        tools: Optional[List[dict]],
+        temperature: float,
+        model: Optional[str],
+        on_token: Optional[Callable[[str], Awaitable[None]]],
+    ) -> ChatCompletion:
+        """Streaming counterpart to `_chat_completion_with_retry`."""
+        return await self._with_rate_limit_retry(
+            lambda: provider.chat_completion_stream(
+                messages, tools=tools, temperature=temperature, model=model, on_token=on_token
+            )
+        )
+
+    async def _with_rate_limit_retry(self, call: Callable[[], Awaitable[ChatCompletion]]) -> ChatCompletion:
+        """Retry the same call on a transient rate limit before giving up on it."""
+        for attempt in range(_RATE_LIMIT_MAX_RETRIES + 1):
+            try:
+                return await call()
+            except LLMRateLimitedError as exc:
+                if attempt >= _RATE_LIMIT_MAX_RETRIES:
+                    raise
+                backoff = exc.retry_after_seconds or (_RATE_LIMIT_BASE_BACKOFF_SECONDS * (attempt + 1))
+                await asyncio.sleep(min(backoff, _RATE_LIMIT_MAX_BACKOFF_SECONDS))
+        raise AssertionError("unreachable")  # loop always returns or raises
 
     # -- accounting -------------------------------------------------------------
 

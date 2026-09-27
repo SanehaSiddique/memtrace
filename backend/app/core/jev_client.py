@@ -37,7 +37,6 @@ import httpx
 from app.core.cost import estimate_tokens
 from app.core.tracing import child_trace
 
-JEV_MODEL = "jev"
 CALL_SITES = ("tool_routing", "result_filtering", "staleness_check")
 
 # Default rubric for `jev_score` when the caller doesn't supply one. Three
@@ -127,7 +126,7 @@ class JEVClient:
         self,
         api_key: Optional[str] = None,
         url: str = "https://ai-gateway.vercel.sh/v1/evaluate",
-        model: str = JEV_MODEL,
+        model: Optional[str] = None,
         timeout: float = 20.0,
         transport: Optional[httpx.AsyncBaseTransport] = None,
     ) -> None:
@@ -165,10 +164,13 @@ class JEVClient:
         started = time.perf_counter()
         try:
             async with httpx.AsyncClient(timeout=self._timeout, transport=self._transport) as client:
+                body: Dict[str, Any] = {"state": state, "questions": questions}
+                if self._model:
+                    body["model"] = self._model
                 response = await client.post(
                     self._url,
                     headers={"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"},
-                    json={"model": self._model, "state": state, "questions": questions},
+                    json=body,
                 )
         except Exception as exc:
             self.last_error = f"{type(exc).__name__}: {exc}"

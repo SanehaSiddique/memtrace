@@ -10,7 +10,6 @@ its raw JSON, verbatim. The per-turn `trace` this graph returns is what the
 metrics collector turns into the §7 payload.
 """
 
-import json
 import time
 from typing import Any, Dict, List, Optional
 
@@ -21,15 +20,17 @@ from app.agent1.memory import Agent1Memory
 from app.core.cost import estimate_tokens
 from app.core.graph8_client import Graph8MCPClient, ToolCallResult
 from app.core.llm_client import LLMClient
+from app.core.system_prompt import CRM_DOMAIN_SYSTEM_PROMPT
 from app.llm.errors import LLMUnavailableError
 from app.metrics.schema import AgentTurnTrace
 from app.tracing.langsmith import traced
 
 AGENT_ID = "agent1"
+_PROVIDER_UNAVAILABLE_ANSWER = "⚠️ The language model is temporarily unavailable (rate-limited or down). Please try again in a moment."
 
 _AGENT1_SYSTEM_PROMPT = (
-    "You are a CRM assistant with long-term memory of this session. "
-    "Answer the user's request, using the provided tools for any CRM data.\n"
+    CRM_DOMAIN_SYSTEM_PROMPT + "\n\n"
+    "You have long-term memory of this session. Use the provided tools for any CRM data.\n"
     "{ltm_block}"
 )
 
@@ -53,6 +54,20 @@ class Agent1State(TypedDict, total=False):
     tool_result: Dict[str, Any]
     answer: str
     trace: Dict[str, Any]
+    # Live "thinking process" step emitter (docs/IMPLEMENTATION_V2.md §5.2),
+    # bound per-turn by orchestrator.py — Any, not a typed Callable, since it's
+    # a transient runtime value that never gets serialized as part of `trace`.
+    event_callback: Any
+
+
+async def _emit_step(state: Agent1State, step: str, detail: Dict[str, Any]) -> None:
+    callback = state.get("event_callback")
+    if callback is None:
+        return
+    try:
+        await callback(step, detail)
+    except Exception:
+        pass  # tracing must never break a real turn
 
 
 def _serialize_tool_result(result: ToolCallResult) -> Dict[str, Any]:
@@ -71,8 +86,10 @@ def build_agent1_graph(llm: LLMClient, tools: Graph8MCPClient, memory: Agent1Mem
     @traced(name="agent1.load_memory")
     async def load_stm_and_ltm(state: Agent1State) -> Agent1State:
         trace = AgentTurnTrace(agent_id=AGENT_ID)
+        stm = memory.history(state["session_id"])
+        await _emit_step(state, "stm_loaded", {"message_count": len(stm)})
         return {
-            "stm": memory.history(state["session_id"]),
+            "stm": stm,
             "ltm_block": await memory.context_block(state["session_id"]),
             "trace": trace.model_dump(),
         }
@@ -90,6 +107,7 @@ def build_agent1_graph(llm: LLMClient, tools: Graph8MCPClient, memory: Agent1Mem
         messages.extend(state["stm"])
         messages.append({"role": "user", "content": state["user_message"]})
 
+        await _emit_step(state, "llm_reasoning_start", {"tools_in_prompt": len(schemas), "model": llm.model_name})
         started = time.perf_counter()
         try:
             response = await llm.chat(
@@ -102,7 +120,7 @@ def build_agent1_graph(llm: LLMClient, tools: Graph8MCPClient, memory: Agent1Mem
         except LLMUnavailableError as exc:
             trace.tool_selection_time_ms = round((time.perf_counter() - started) * 1000, 2)
             trace.notes.append(f"llm_unavailable: {exc}")
-            return {"trace": trace.model_dump(), "answer": "", "pending_tool_name": None}
+            return {"trace": trace.model_dump(), "answer": _PROVIDER_UNAVAILABLE_ANSWER, "pending_tool_name": None}
         trace.tool_selection_time_ms = round((time.perf_counter() - started) * 1000, 2)
 
         if response.tool_calls:
@@ -118,6 +136,7 @@ def build_agent1_graph(llm: LLMClient, tools: Graph8MCPClient, memory: Agent1Mem
     @traced(name="agent1.call_tool")
     async def call_tool(state: Agent1State) -> Agent1State:
         trace = AgentTurnTrace(**state["trace"])
+        await _emit_step(state, "tool_call_start", {"tool_name": state.get("pending_tool_name") or ""})
         result = await tools.call_tool(
             state["pending_tool_name"] or "",
             state.get("pending_tool_arguments") or {},
@@ -130,6 +149,7 @@ def build_agent1_graph(llm: LLMClient, tools: Graph8MCPClient, memory: Agent1Mem
             trace.tool_errors.append(result.error)
         trace.details["tool_latency_ms"] = result.latency_ms
         trace.details["tool_name"] = result.name
+        await _emit_step(state, "tool_call_result", {"raw_tokens_estimate": trace.raw_result_tokens})
         return {"tool_result": _serialize_tool_result(result), "trace": trace.model_dump()}
 
     @traced(name="agent1.final_answer")
@@ -144,36 +164,40 @@ def build_agent1_graph(llm: LLMClient, tools: Graph8MCPClient, memory: Agent1Mem
         tool_result = state.get("tool_result")
         if tool_result is not None:
             # §5.2: the raw payload goes in verbatim — no filtering, no trimming.
+            # Represented as plain conversational text on a "user" turn rather
+            # than a native assistant.tool_calls/role:"tool" pair: this call
+            # passes tools=None (no more tool use should happen), and some
+            # models — Groq's gpt-oss-120b among them — keep trying to emit
+            # another tool call when the history still shows one in native
+            # tool-call format, which Groq then hard-rejects as "tool_choice
+            # is none, but model called a tool" instead of just answering in
+            # text. Ending on "user" (not a second consecutive "assistant"
+            # turn) also avoids the model producing an empty completion.
+            payload = tool_result["raw_text"] or f"tool error: {tool_result.get('error')}"
             messages.append(
                 {
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [
-                        {
-                            "id": "call_0",
-                            "type": "function",
-                            "function": {
-                                "name": tool_result["name"],
-                                "arguments": json.dumps(state.get("pending_tool_arguments") or {}),
-                            },
-                        }
-                    ],
+                    "role": "user",
+                    "content": f"[Tool `{tool_result['name']}` result:]\n{payload}\n\nUsing this, answer my question above.",
                 }
             )
-            payload = tool_result["raw_text"] or f"tool error: {tool_result.get('error')}"
-            messages.append({"role": "tool", "tool_call_id": "call_0", "content": payload})
+
+        await _emit_step(state, "llm_final_answer_start", {})
+
+        async def _on_token(token: str) -> None:
+            await _emit_step(state, "llm_final_answer_token", {"token": token})
 
         try:
-            response = await llm.chat(
+            response = await llm.chat_stream(
                 messages,
                 tools=None,
                 agent_id=AGENT_ID,
                 call_type="final_answer",
                 run_group_id=state["run_group_id"],
+                on_token=_on_token,
             )
         except LLMUnavailableError as exc:
             trace.notes.append(f"llm_unavailable_final: {exc}")
-            return {"answer": "", "trace": trace.model_dump()}
+            return {"answer": _PROVIDER_UNAVAILABLE_ANSWER, "trace": trace.model_dump()}
         return {"answer": response.content, "trace": trace.model_dump()}
 
     @traced(name="agent1.extract_facts")

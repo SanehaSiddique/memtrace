@@ -1,7 +1,7 @@
 """LLM client interface. Callers depend on this, never on a concrete provider."""
 
 from abc import ABC, abstractmethod
-from typing import List, Optional, Tuple
+from typing import Awaitable, Callable, List, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
@@ -94,3 +94,24 @@ class BaseLLMClient(ABC):
 
     async def embed_many(self, texts: List[str]) -> List[List[float]]:
         return [await self.embed(t) for t in texts]
+
+    async def chat_completion_stream(
+        self,
+        messages: List[dict],
+        tools: Optional[List[dict]] = None,
+        temperature: float = 0.0,
+        model: Optional[str] = None,
+        on_token: Optional[Callable[[str], Awaitable[None]]] = None,
+    ) -> "ChatCompletion":
+        """Like `chat_completion`, but calls `on_token` for each content delta
+        as it streams in (docs/IMPLEMENTATION_V2.md §5.2 `llm_final_answer_token`).
+
+        Providers that can stream override this with a real SSE implementation.
+        This default degrades gracefully for any that can't: one non-streaming
+        call, then `on_token` fires once with the full content — callers still
+        get a real answer, just without incremental visibility.
+        """
+        completion = await self.chat_completion(messages, tools=tools, temperature=temperature, model=model)
+        if on_token and completion.content:
+            await on_token(completion.content)
+        return completion

@@ -18,12 +18,25 @@ from app.tracing.langsmith import traced
 # as a safety net so an uncertain JEV call cannot silently break tool access.
 DEFAULT_CONFIDENCE_THRESHOLD = 0.70
 
-_TOOL_DESCRIPTIONS = {
-    "g8_search_contacts": "Search for people, leads, or contacts by name, job title, email, or company.",
-    "g8_search_companies": "Search for companies, organizations, or accounts by name, industry, or domain.",
-    "g8_lookup_company": "Fetch full detailed profile of a specific company by exact company ID or domain.",
-    "none": "No CRM tool needed. The query is conversational, asks about prior session facts, or needs general reasoning.",
-}
+_NONE_DESCRIPTION = "No CRM tool needed. The query is conversational, asks about prior session facts, or needs general reasoning."
+# graph8's real tool descriptions run long (multi-sentence); routing 50 of them
+# through Jev in full would balloon the routing call's input tokens for no
+# accuracy gain, so each is capped to its leading clause.
+_CRITERIA_MAX_CHARS = 160
+
+
+def _tool_criteria(tools: Graph8MCPClient) -> Dict[str, str]:
+    """Real per-tool descriptions from the live graph8 MCP catalog (docs/IMPLEMENTATION_V2.md
+    §3.2) — one source of truth, not a hand-maintained duplicate that drifts as the
+    50-tool registry changes."""
+    criteria = {}
+    for spec in tools.specs:
+        text = (spec.description or spec.name).strip()
+        if len(text) > _CRITERIA_MAX_CHARS:
+            text = text[:_CRITERIA_MAX_CHARS].rsplit(" ", 1)[0] + "…"
+        criteria[spec.name] = text
+    criteria["none"] = _NONE_DESCRIPTION
+    return criteria
 
 
 @dataclass
@@ -33,6 +46,10 @@ class ToolRoutingDecision:
     routed_choice: str  # tool name or "none" or "all" (fallback)
     confidence: float = 0.0
     schemas_to_inject: List[Dict[str, Any]] = field(default_factory=list)
+    # Full per-option probability spread from JEV's choice call (docs/IMPLEMENTATION_V2.md
+    # §5.2 jev_routing_result) — not just the winner, so the live trace view can show how
+    # decisively JEV separated the chosen tool from the runner-up.
+    probabilities: Dict[str, float] = field(default_factory=dict)
     tools_considered: int = 0
     used_fallback: bool = False
     fallback_reason: Optional[str] = None
@@ -53,7 +70,7 @@ async def route_tools(
     all_schemas = tools.tool_schemas()
     available_tools = [s["function"]["name"] for s in all_schemas]
     options = list(available_tools) + ["none"]
-    criteria = {opt: _TOOL_DESCRIPTIONS.get(opt, opt) for opt in options}
+    criteria = _tool_criteria(tools)
 
     # Context given to Jev: the current message plus the last STM turn if any
     context = {
@@ -80,6 +97,7 @@ async def route_tools(
         return ToolRoutingDecision(
             routed_choice="all",
             confidence=0.0,
+            probabilities=result.probabilities,
             schemas_to_inject=all_schemas,
             tools_considered=len(all_schemas),
             used_fallback=True,
@@ -93,6 +111,7 @@ async def route_tools(
         return ToolRoutingDecision(
             routed_choice=result.choice,
             confidence=result.confidence,
+            probabilities=result.probabilities,
             schemas_to_inject=all_schemas,
             tools_considered=len(all_schemas),
             used_fallback=True,
@@ -107,6 +126,7 @@ async def route_tools(
         return ToolRoutingDecision(
             routed_choice="none",
             confidence=result.confidence,
+            probabilities=result.probabilities,
             schemas_to_inject=[],
             tools_considered=0,
             used_fallback=False,
@@ -120,6 +140,7 @@ async def route_tools(
         return ToolRoutingDecision(
             routed_choice=result.choice,
             confidence=result.confidence,
+            probabilities=result.probabilities,
             schemas_to_inject=targeted,
             tools_considered=1,
             used_fallback=False,
@@ -131,6 +152,7 @@ async def route_tools(
     return ToolRoutingDecision(
         routed_choice="all",
         confidence=result.confidence,
+        probabilities=result.probabilities,
         schemas_to_inject=all_schemas,
         tools_considered=len(all_schemas),
         used_fallback=True,

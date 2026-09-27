@@ -70,6 +70,30 @@ class TurnMetrics(BaseModel):
     store_backends: Dict[str, str] = Field(default_factory=dict)
     created_at: str = ""
 
+    # --- background graph-write (docs/IMPLEMENTATION_V2.md §4.3, agent2 only) --
+    # Populated after the fact once the decoupled background task finishes —
+    # None until then. Kept separate from `latency_ms_total`/`jev_calls` above
+    # (which now reflect only the response-critical path) so the dashboard can
+    # show where the time/JEV-call cost of the background write went, honestly,
+    # rather than making agent2 look artificially fast/cheap by omission.
+    graph_write_latency_ms: Optional[float] = None
+    graph_write_jev_calls: Optional[int] = None
+
+
+class TraceEvent(BaseModel):
+    """One step in the live "thinking process" stream (docs/IMPLEMENTATION_V2.md
+    §5.2) — a granular, in-flight look at what a turn is doing (JEV's routing
+    probabilities, per-chunk filtering scores, streamed answer tokens, ...),
+    distinct from the turn-level `ChatEvent`s (status/final/metrics) V1 already
+    sends. Sent over the same `/ws/chat` connection; the frontend tells them
+    apart by shape (`step`+`timestamp`+`detail` vs. `event`+`data`)."""
+
+    agent_id: str  # "agent1" | "agent2"
+    run_group_id: str
+    step: str  # see the step vocabulary in docs/IMPLEMENTATION_V2.md §5.2
+    timestamp: float
+    detail: Dict[str, Any] = Field(default_factory=dict)
+
 
 class TurnRequest(BaseModel):
     """What a client sends on `WS /ws/chat` (docs §8)."""

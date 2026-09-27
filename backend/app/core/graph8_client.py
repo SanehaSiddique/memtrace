@@ -31,8 +31,77 @@ from typing import Any, AsyncIterator, Callable, Dict, List, Optional
 
 from app.core.tracing import child_trace
 
-# The registered tool registry (docs §4.3): read-only, bounded payloads.
-DEFAULT_TOOL_NAMES = ["g8_search_contacts", "g8_search_companies", "g8_lookup_company"]
+# Domain-constrained tool registry (docs/IMPLEMENTATION_V2.md §3.2): curated
+# from graph8's live MCP catalog (409 tools as of this build) into four
+# CRM-shaped buckets. Both agents register the identical 50-tool set — Agent1
+# injects all 50 schemas into every reasoning call unconditionally, Agent2's
+# JEV routing (agent2/tool_routing.py) narrows it to at most one per turn.
+# Picking between 3 tools proved nothing; picking correctly out of 50 does.
+CONTACTS_TOOL_NAMES = [
+    "g8_search_contacts",
+    "g8_find_contacts",
+    "g8_lookup_person",
+    "g8_get_contact_detail",
+    "g8_create_contact",
+    "g8_update_contact",
+    "g8_get_contact_activity",
+    "g8_get_contact_deals",
+    "g8_get_contact_company",
+    "g8_list_hot_contacts",
+    "g8_crm_get_list_contacts",
+    "g8_get_contact_quotes",
+    "g8_enrich_contacts",
+    "g8_crm_list_contact_tasks",
+    "g8_crm_assert_contact",
+    "g8_crm_assert_contacts_batch",
+    "g8_get_enrichment_job",
+    "g8_list_enrichment_providers",
+    "g8_crm_list_suppressions",
+    "g8_add_to_list",
+]
+
+COMPANIES_DEALS_TOOL_NAMES = [
+    "g8_search_companies",
+    "g8_find_companies",
+    "g8_lookup_company",
+    "g8_crm_get_company",
+    "g8_create_company",
+    "g8_crm_update_company",
+    "g8_get_company_contacts",
+    "g8_get_company_deals",
+    "g8_get_company_quotes",
+    "g8_company_open_jobs",
+    "g8_get_deals",
+    "g8_get_deal",
+    "g8_create_deal",
+    "g8_update_deal",
+    "g8_get_pipeline",
+    "g8_delete_deal",
+    "g8_crm_assert_company",
+    "g8_crm_assert_companies_batch",
+    "g8_crm_assert_deal",
+    "g8_crm_list_company_columns",
+]
+
+SEQUENCES_CAMPAIGNS_TOOL_NAMES = [
+    "g8_list_sequences",
+    "g8_add_to_sequence",
+    "g8_get_sequence_preview",
+    "g8_get_sequence_analytics",
+    "g8_sequence_get_sequence",
+]
+
+UTILITY_TOOL_NAMES = [
+    "g8_get_activity_summary",
+    "g8_get_activities",
+    "g8_list_inbox",
+    "g8_crm_list_duplicates",
+    "g8_list_fields",
+]
+
+DEFAULT_TOOL_NAMES = (
+    CONTACTS_TOOL_NAMES + COMPANIES_DEALS_TOOL_NAMES + SEQUENCES_CAMPAIGNS_TOOL_NAMES + UTILITY_TOOL_NAMES
+)
 
 
 @dataclass
@@ -51,6 +120,38 @@ class ToolCallResult:
         return len(self.raw_text)
 
 
+# graph8's real MCP schemas run 1.8-3.4k+ chars each (long descriptions, and
+# per-field descriptions on every JSON Schema property) — fine for one tool,
+# but 50 of them sent unconditionally (docs/IMPLEMENTATION_V2.md §3.2, Agent1's
+# baseline) blows well past a real provider's per-request token cap. The LLM
+# needs field names/types/required-ness to call a tool correctly, not a
+# paragraph of prose per field, so the OpenAI-schema view trims verbosity;
+# `description`/`input_schema` themselves stay untouched as the source of truth.
+_TOOL_DESCRIPTION_MAX_CHARS = 60
+_PARAM_DESCRIPTION_MAX_CHARS = 20
+
+
+def _trim_text(text: str, max_chars: int) -> str:
+    text = (text or "").strip()
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars].rsplit(" ", 1)[0] + "…"
+
+
+def _trim_param_schema(schema: Any) -> Any:
+    if isinstance(schema, dict):
+        trimmed = {}
+        for key, value in schema.items():
+            if key == "description" and isinstance(value, str):
+                trimmed[key] = _trim_text(value, _PARAM_DESCRIPTION_MAX_CHARS)
+            else:
+                trimmed[key] = _trim_param_schema(value)
+        return trimmed
+    if isinstance(schema, list):
+        return [_trim_param_schema(item) for item in schema]
+    return schema
+
+
 @dataclass
 class Graph8ToolSpec:
     """One tool schema, kept provider-shaped and unedited (docs §5.2)."""
@@ -64,8 +165,8 @@ class Graph8ToolSpec:
             "type": "function",
             "function": {
                 "name": self.name,
-                "description": self.description,
-                "parameters": self.input_schema or {"type": "object", "properties": {}},
+                "description": _trim_text(self.description, _TOOL_DESCRIPTION_MAX_CHARS),
+                "parameters": _trim_param_schema(self.input_schema) or {"type": "object", "properties": {}},
             },
         }
 

@@ -6,14 +6,14 @@ and no external embedding quota is consumed.
 """
 
 import asyncio
-from typing import List, Optional, Tuple
+from typing import Awaitable, Callable, List, Optional, Tuple
 
 import httpx
 
 from app.llm.errors import LLMRateLimitedError, LLMUnavailableError
 from app.llm.hashing import hash_embed
 from app.llm.interface import BaseLLMClient, ChatCompletion
-from app.llm.wire import parse_chat_completion
+from app.llm.wire import StreamRateLimited, parse_chat_completion, stream_chat_completion
 
 DEFAULT_GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
@@ -100,6 +100,34 @@ class GroqLLMClient(BaseLLMClient):
             data = response.json()
 
         return parse_chat_completion(data, fallback_model=chosen_model)
+
+    async def chat_completion_stream(
+        self,
+        messages: List[dict],
+        tools: Optional[List[dict]] = None,
+        temperature: float = 0.0,
+        model: Optional[str] = None,
+        on_token: Optional[Callable[[str], Awaitable[None]]] = None,
+    ) -> ChatCompletion:
+        self.provider_call_count += 1
+        chosen_model = model or self._model
+        payload: dict = {"model": chosen_model, "messages": messages, "temperature": temperature}
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
+
+        async with httpx.AsyncClient(timeout=self._timeout, transport=self._transport) as client:
+            try:
+                return await stream_chat_completion(
+                    client, f"{self._base_url}/chat/completions", self._headers(), payload, chosen_model, on_token
+                )
+            except StreamRateLimited as exc:
+                self.rate_limit_events += 1
+                raise LLMRateLimitedError(
+                    f"Groq model {chosen_model} is rate-limited (HTTP 429)", exc.retry_after_seconds
+                ) from exc
+            except httpx.RequestError as exc:
+                raise LLMUnavailableError(f"Groq network error: {exc}") from exc
 
     async def embed(self, text: str) -> List[float]:
         # Fast local hash embeddings (consistent dimension with Mock & OpenRouter)

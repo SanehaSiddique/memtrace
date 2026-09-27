@@ -24,6 +24,11 @@ MAX_CHUNKS_KEPT = 5
 MAX_CHUNKS_EVALUATED = 8  # cap Jev volume per turn to bound latency/costs
 
 
+def _preview(chunk: Dict[str, Any], max_chars: int = 100) -> str:
+    text = json.dumps(chunk, default=str)
+    return text if len(text) <= max_chars else text[:max_chars].rsplit(" ", 1)[0] + "…"
+
+
 @dataclass
 class FilterResult:
     """Outcome of filtering raw tool payload into compact context."""
@@ -36,9 +41,12 @@ class FilterResult:
     latency_ms: float = 0.0
     used_fallback: bool = False
     notes: List[str] = field(default_factory=list)
+    # Per-chunk detail for the live "thinking process" view (docs/IMPLEMENTATION_V2.md
+    # §5.2 jev_filtering_result): what JEV scored each chunk and whether it survived.
+    chunk_details: List[Dict[str, Any]] = field(default_factory=list)
 
 
-def _decompose_into_chunks(raw_text: str) -> List[Dict[str, Any]]:
+def decompose_into_chunks(raw_text: str) -> List[Dict[str, Any]]:
     """Parse JSON and extract discrete entity chunks (records/items)."""
     text = (raw_text or "").strip()
     if not text:
@@ -94,7 +102,7 @@ async def filter_tool_result(
             notes=["empty_or_failed_tool_result"],
         )
 
-    chunks = _decompose_into_chunks(raw_text)
+    chunks = decompose_into_chunks(raw_text)
     if not chunks:
         return FilterResult(
             filtered_text=raw_text,
@@ -130,6 +138,7 @@ async def filter_tool_result(
         fallback_chunks = chunks[:3]
         fallback_text = json.dumps(fallback_chunks, indent=2)
         filtered_tokens = estimate_tokens(fallback_text)
+        fallback_ids = {id(c) for c in fallback_chunks}
         return FilterResult(
             filtered_text=fallback_text,
             raw_tokens=raw_tokens,
@@ -139,6 +148,9 @@ async def filter_tool_result(
             latency_ms=latency_ms,
             used_fallback=True,
             notes=["jev_scoring_unavailable_truncated_chunks_fallback"],
+            chunk_details=[
+                {"text_preview": _preview(c), "score": None, "kept": id(c) in fallback_ids} for c in chunks
+            ],
         )
 
     scored_chunks = [(c, s) for c, s, ok in results if ok and s >= threshold]
@@ -152,6 +164,8 @@ async def filter_tool_result(
 
     filtered_text = json.dumps(kept_chunks, indent=2)
     filtered_tokens = estimate_tokens(filtered_text)
+    kept_ids = {id(c) for c in kept_chunks}
+    score_by_id = {id(c): s for c, s, ok in results if ok}
 
     return FilterResult(
         filtered_text=filtered_text,
@@ -162,4 +176,12 @@ async def filter_tool_result(
         latency_ms=latency_ms,
         used_fallback=False,
         notes=[f"jev_filtered: kept {len(kept_chunks)}/{len(chunks)} chunks, tokens {raw_tokens}->{filtered_tokens}"],
+        chunk_details=[
+            {
+                "text_preview": _preview(chunk),
+                "score": round(score_by_id[id(chunk)], 3) if id(chunk) in score_by_id else None,
+                "kept": id(chunk) in kept_ids,
+            }
+            for chunk in chunks
+        ],
     )

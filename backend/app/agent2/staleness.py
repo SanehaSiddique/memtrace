@@ -57,6 +57,12 @@ def _heuristic_contradicts(old_text: str, new_text: str) -> bool:
 
     # Replacement indicator phrases
     replace_markers = ["moved to", "switched to", "changed to", "replaced with", "no longer", "instead of", "prefers", "now uses"]
+    if any(marker in new_lower for marker in replace_markers):
+        return True
+
+    return False
+
+
 @traced(name="agent2.resolve_staleness")
 async def resolve_and_save_facts(
     graph_store: FactGraphStore,
@@ -117,8 +123,3 @@ async def resolve_and_save_facts(
                 superseded_any = True
 
     return resolution
-
-    if any(marker in new_lower for marker in replace_markers):
-        return True
-
-    return False
