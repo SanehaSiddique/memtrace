@@ -57,7 +57,18 @@ def test_live_llm_client_is_counted_and_cached(monkeypatch):
     assert groq_client.model_name == "openai/gpt-oss-120b"
     assert groq_client.inner.provider == "groq"
 
-    # Groq wins when both are set, and OpenRouter still serves as the fallback.
+    # OpenAI takes priority when configured alongside Groq.
+    openai_settings = Settings(
+        _env_file=None,
+        groq_api_key="test-key",
+        openai_api_key="test-key",
+        openai_model="gpt-4o-mini",
+    )
+    openai_client = get_llm_client(openai_settings)
+    assert openai_client.model_name == "gpt-4o-mini"
+    assert openai_client.inner.provider == "openai-compatible"
+
+    # Groq remains ahead of OpenRouter when OpenAI is not configured.
     both_settings = Settings(
         _env_file=None,
         groq_api_key="test-key",

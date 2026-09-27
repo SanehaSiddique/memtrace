@@ -17,6 +17,15 @@ def _wrap_live_client(client: BaseLLMClient, settings: Settings) -> BaseLLMClien
 
 
 def get_llm_client(settings: Settings) -> BaseLLMClient:
+    if settings.openai_api_key:
+        return _wrap_live_client(
+            OpenAICompatibleLLMClient(
+                api_key=settings.openai_api_key,
+                base_url=settings.openai_base_url,
+                model=settings.openai_model,
+            ),
+            settings,
+        )
     if settings.groq_api_key:
         return _wrap_live_client(
             GroqLLMClient(
@@ -34,15 +43,6 @@ def get_llm_client(settings: Settings) -> BaseLLMClient:
                 base_url=settings.openrouter_base_url,
                 site_url=settings.openrouter_site_url,
                 app_name=settings.openrouter_app_name,
-            ),
-            settings,
-        )
-    if settings.openai_api_key:
-        return _wrap_live_client(
-            OpenAICompatibleLLMClient(
-                api_key=settings.openai_api_key,
-                base_url=settings.openai_base_url,
-                model=settings.openai_model,
             ),
             settings,
         )

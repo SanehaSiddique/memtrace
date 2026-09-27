@@ -15,7 +15,7 @@ import AskBar from "./AskBar";
 import RecentActivity from "./RecentActivity";
 import MetricBadge from "../shared/MetricBadge";
 
-export default function ExecutiveView({ refreshSignal }) {
+export default function ExecutiveView({ refreshSignal = 0 }) {
   const [summary, setSummary] = useState(null);
   const [leaks, setLeaks] = useState([]);
   const [runs, setRuns] = useState([]);

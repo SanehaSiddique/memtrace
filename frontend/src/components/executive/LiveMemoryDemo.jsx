@@ -76,11 +76,10 @@ export default function LiveMemoryDemo({ agentId, conversationId, onActivity }) 
   );
 
   // A focused 3-fact starting point (matching the classic "MongoDB / session
-  // auth / AWS, all ACTIVE" scenario) — deliberately smaller than the full
-  // "Seed demo data" story in the header, so the MongoDB -> PostgreSQL
-  // migration below is something you can actually watch happen live, not
-  // something that already happened before you opened the page. If the
-  // header's full seed already ran, `chains.length > 0` and this never shows.
+  // auth / AWS, all ACTIVE" scenario) — deliberately small, so the
+  // MongoDB -> PostgreSQL migration below is something you can actually watch
+  // happen live, not something that already happened before you opened the
+  // page. If memories already exist, `chains.length > 0` and this never shows.
   async function handleSetUpScenario() {
     setLoading(true);
     try {
@@ -181,8 +180,8 @@ export default function LiveMemoryDemo({ agentId, conversationId, onActivity }) 
       <div className="card">
         <h3 className="card-title">Live memory graph</h3>
         <div className="empty-note">
-          Set up the scenario to see MongoDB → PostgreSQL migrate live (this is a smaller starting point than the
-          header's "Seed demo data", so you can actually watch the migration happen below).
+          Set up the scenario to see MongoDB → PostgreSQL migrate live (a small, focused starting point so you can
+          actually watch the migration happen below).
         </div>
         <button className="btn btn-primary" onClick={handleSetUpScenario} style={{ marginTop: 12 }}>
           Set up scenario

@@ -75,7 +75,6 @@ button {
 .brand { display: flex; align-items: baseline; gap: 10px; }
 .brand .logo { font-weight: 800; font-size: 20px; letter-spacing: 0.5px; }
 .brand .logo em { font-style: normal; background: var(--accent-gradient); -webkit-background-clip: text; background-clip: text; color: transparent; }
-.brand .tagline { color: var(--text-dim); font-size: 13px; }
 
 .view-toggle {
   display: flex;

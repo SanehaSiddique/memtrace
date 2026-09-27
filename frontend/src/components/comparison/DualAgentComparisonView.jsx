@@ -7,13 +7,6 @@ import CostComparison from "./CostComparison";
 import { useAgentSocket } from "../../hooks/useAgentSocket";
 import { api } from "../../api";
 
-const BENCHMARK_PROMPTS = [
-  "Find contact details for Acme Corp lead",
-  "We decided yesterday to migrate our backend from MySQL to PostgreSQL",
-  "What database are we using right now?",
-  "List our current top enterprise partners",
-];
-
 export default function DualAgentComparisonView({ sessionId = "default_session" }) {
   const [inputText, setInputText] = useState("");
   const [activeTab, setActiveTab] = useState("chat"); // "chat" | "metrics" | "graph" | "cost"
@@ -292,25 +285,6 @@ export default function DualAgentComparisonView({ sessionId = "default_session" 
                 streamingText={a2StreamingText}
               />
               <AgentTracePanel agentId="agent2" events={a2Trace} />
-            </div>
-          </div>
-
-          {/* Quick Benchmark Prompt Suggestions */}
-          <div className="card" style={{ marginBottom: 20 }}>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-              <span style={{ fontSize: 12, color: "var(--text-dim)", fontWeight: 600 }}>Demo Benchmark Prompts:</span>
-              {BENCHMARK_PROMPTS.map((prompt, idx) => (
-                <button
-                  key={idx}
-                  className="btn btn-ghost"
-                  style={{ fontSize: 12, border: "1px solid var(--border)", padding: "4px 10px" }}
-                  onClick={() => {
-                    setInputText(prompt);
-                  }}
-                >
-                  {prompt}
-                </button>
-              ))}
             </div>
           </div>
 
