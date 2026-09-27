@@ -43,6 +43,15 @@ function entityIdToName(id) {
   return id && id.startsWith("entity::") ? id.slice("entity::".length) : null;
 }
 
+// Must mirror the backend's `_entity_key()` (db/neo4j_driver.py): entity ids
+// are `entity::<normalized-key>`, but a Fact's own `.entity` field keeps its
+// original display casing — so any lookup from a fact into `centroids` (which
+// is keyed by the same normalized form) has to normalize first, or "Milvus"
+// silently misses "milvus" and the node free-floats at the canvas center.
+function keyOf(name) {
+  return (name || "").trim().toLowerCase();
+}
+
 export default function GraphView({ sessionId, refreshSignal }) {
   const [graphData, setGraphData] = useState({ nodes: [], edges: [] });
   const [loading, setLoading] = useState(false);
@@ -79,7 +88,10 @@ export default function GraphView({ sessionId, refreshSignal }) {
 
   const factNodes = useMemo(() => graphData.nodes.filter((n) => n.label !== "Entity"), [graphData.nodes]);
   const entityNodes = useMemo(() => graphData.nodes.filter((n) => n.label === "Entity"), [graphData.nodes]);
-  const entityNames = useMemo(() => entityNodes.map((n) => n.name).filter(Boolean).sort(), [entityNodes]);
+  const entityNames = useMemo(
+    () => entityNodes.map((n) => entityIdToName(n.id)).filter(Boolean).sort(),
+    [entityNodes]
+  );
   const entityKey = entityNames.join("|");
   const centroids = useMemo(() => layoutEntityCentroids(entityNames), [entityKey]);
 
@@ -109,7 +121,7 @@ export default function GraphView({ sessionId, refreshSignal }) {
     for (const node of factNodes) {
       known.add(node.id);
       if (!pos.has(node.id)) {
-        const c = centroids[node.entity] || { x: WIDTH / 2, y: HEIGHT / 2 };
+        const c = centroids[keyOf(node.entity)] || { x: WIDTH / 2, y: HEIGHT / 2 };
         pos.set(node.id, {
           x: c.x + (Math.random() - 0.5) * 30,
           y: c.y + (Math.random() - 0.5) * 30,
@@ -155,7 +167,7 @@ export default function GraphView({ sessionId, refreshSignal }) {
       for (const node of factNodes) {
         const p = pos.get(node.id);
         if (!p) continue;
-        const c = centroids[node.entity] || { x: WIDTH / 2, y: HEIGHT / 2 };
+        const c = centroids[keyOf(node.entity)] || { x: WIDTH / 2, y: HEIGHT / 2 };
         p.vx += (c.x - p.x) * SPRING_K;
         p.vy += (c.y - p.y) * SPRING_K;
       }
@@ -217,29 +229,47 @@ export default function GraphView({ sessionId, refreshSignal }) {
             style={{ flex: 1, background: "var(--panel-2)", borderRadius: "var(--radius-sm)", border: "1px solid var(--border)", overflow: "hidden" }}
           >
             <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} width="100%" height="100%" style={{ display: "block", minHeight: 340 }}>
-              {/* Edges first, so nodes render on top */}
+              {/* Edges first, so nodes render on top. Three kinds: ABOUT
+                  (fact -> its entity, thin gray), SUPERSEDED_BY (fact -> fact,
+                  dashed amber), and RELATES_TO (entity -> entity, the only edge
+                  that connects two different clusters to each other — solid
+                  violet with its label at the midpoint). */}
               {graphData.edges.map((edge, idx) => {
                 const a = getPos(edge.source);
                 const b = getPos(edge.target);
                 const isSupersede = edge.type === "SUPERSEDED_BY";
+                const isRelation = edge.type === "RELATES_TO";
                 return (
-                  <line
-                    key={idx}
-                    x1={a.x}
-                    y1={a.y}
-                    x2={b.x}
-                    y2={b.y}
-                    stroke={isSupersede ? "var(--amber)" : "var(--border)"}
-                    strokeWidth={isSupersede ? 1.5 : 1}
-                    strokeDasharray={isSupersede ? "5 4" : undefined}
-                    opacity={isSupersede ? 0.8 : 0.5}
-                  />
+                  <g key={idx}>
+                    <line
+                      x1={a.x}
+                      y1={a.y}
+                      x2={b.x}
+                      y2={b.y}
+                      stroke={isSupersede ? "var(--amber)" : isRelation ? "var(--violet)" : "var(--border)"}
+                      strokeWidth={isSupersede || isRelation ? 1.5 : 1}
+                      strokeDasharray={isSupersede ? "5 4" : undefined}
+                      opacity={isSupersede ? 0.8 : isRelation ? 0.6 : 0.5}
+                    />
+                    {isRelation && edge.label && (
+                      <text
+                        x={(a.x + b.x) / 2}
+                        y={(a.y + b.y) / 2 - 4}
+                        textAnchor="middle"
+                        fontSize={9}
+                        fill="var(--violet)"
+                        style={{ paintOrder: "stroke", stroke: "var(--panel-2)", strokeWidth: 3 }}
+                      >
+                        {edge.label}
+                      </text>
+                    )}
+                  </g>
                 );
               })}
 
               {/* Entity cluster centroids + labels */}
               {entityNodes.map((entity) => {
-                const c = centroids[entity.name] || { x: WIDTH / 2, y: HEIGHT / 2 };
+                const c = centroids[entityIdToName(entity.id)] || { x: WIDTH / 2, y: HEIGHT / 2 };
                 return (
                   <g key={entity.id}>
                     <circle cx={c.x} cy={c.y} r={ENTITY_R} fill="var(--panel)" stroke="var(--text-dim)" strokeWidth={1.5} />

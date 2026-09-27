@@ -37,6 +37,31 @@ def _new_id() -> str:
     return f"fact_{uuid.uuid4().hex[:12]}"
 
 
+def _entity_key(name: str) -> str:
+    """Case/whitespace-insensitive matching key for an entity name — extraction
+    is an LLM call, not a controlled vocabulary, so the same real-world entity
+    routinely comes back as "Milvus" in one turn and "MILVUS" in another. Every
+    entity lookup/merge goes through this key so those collapse into one
+    cluster instead of silently fragmenting into several."""
+    return (name or "").strip().lower()
+
+
+@dataclass
+class EntityRelation:
+    """A directed, labelled edge between two entities (e.g. "RAG pipeline" —
+    uses —> "Milvus"), extracted the same turn as facts. Distinct from
+    :Fact-[:ABOUT]->:Entity: this is the only edge type that connects two
+    different entities to each other."""
+
+    session_id: str
+    source_key: str
+    source_name: str
+    label: str
+    target_key: str
+    target_name: str
+    created_at: str = field(default_factory=_iso_now)
+
+
 @dataclass
 class FactNode:
     """One fact in the graph, with the entity it is about and its status."""
@@ -85,6 +110,14 @@ class FactGraphStore(ABC):
     async def recent_facts(self, session_id: str, limit: int) -> List[FactNode]: ...
 
     @abstractmethod
+    async def add_relation(self, session_id: str, source_entity: str, label: str, target_entity: str) -> bool:
+        """Record a directed, labelled edge between two entities. Returns False
+        (no-op) for a self-loop or an empty entity name — anything else is
+        merged in and counts as written, whether or not the exact edge already
+        existed (idempotent, not "was this new")."""
+        ...
+
+    @abstractmethod
     async def session_facts(self, session_id: str) -> List[FactNode]: ...
 
     @abstractmethod
@@ -105,21 +138,65 @@ class InMemoryFactGraph(FactGraphStore):
     def __init__(self, degraded_reason: Optional[str] = None) -> None:
         self.degraded_reason = degraded_reason
         self._facts: Dict[str, FactNode] = {}
+        self._relations: List[EntityRelation] = []
 
     async def initialize(self) -> None:
         return None
 
+    def _canonical_entity_name(self, session_id: str, entity: str) -> str:
+        """The display form to store: whatever this normalized key was first
+        seen as, so "Milvus" and "MILVUS" land on the same entity/cluster."""
+        key = _entity_key(entity)
+        for fact in self._facts.values():
+            if fact.session_id == session_id and _entity_key(fact.entity) == key:
+                return fact.entity
+        for rel in self._relations:
+            if rel.session_id == session_id and rel.source_key == key:
+                return rel.source_name
+            if rel.session_id == session_id and rel.target_key == key:
+                return rel.target_name
+        return (entity or "").strip()
+
     async def add_fact(self, session_id: str, text: str, entity: str) -> FactNode:
-        node = FactNode(id=_new_id(), session_id=session_id, text=text, entity=entity)
+        canonical = self._canonical_entity_name(session_id, entity)
+        node = FactNode(id=_new_id(), session_id=session_id, text=text, entity=canonical)
         self._facts[node.id] = node
         return node
 
     async def find_active_facts(self, session_id: str, entity: str) -> List[FactNode]:
+        key = _entity_key(entity)
         return [
             fact
             for fact in self._facts.values()
-            if fact.session_id == session_id and fact.entity == entity and fact.status == STATUS_ACTIVE
+            if fact.session_id == session_id and _entity_key(fact.entity) == key and fact.status == STATUS_ACTIVE
         ]
+
+    async def add_relation(self, session_id: str, source_entity: str, label: str, target_entity: str) -> bool:
+        source_name = self._canonical_entity_name(session_id, source_entity)
+        target_name = self._canonical_entity_name(session_id, target_entity)
+        source_key, target_key = _entity_key(source_name), _entity_key(target_name)
+        if not source_key or not target_key or source_key == target_key:
+            return False  # a "relation" to itself or an empty entity carries no information
+        label = (label or "relates to").strip()
+        for rel in self._relations:
+            if (
+                rel.session_id == session_id
+                and rel.source_key == source_key
+                and rel.target_key == target_key
+                and rel.label == label
+            ):
+                return True  # same edge already recorded — still a valid write, just idempotent
+        self._relations.append(
+            EntityRelation(
+                session_id=session_id,
+                source_key=source_key,
+                source_name=source_name,
+                label=label,
+                target_key=target_key,
+                target_name=target_name,
+            )
+        )
+        return True
 
     async def mark_stale(
         self,
@@ -158,7 +235,19 @@ class InMemoryFactGraph(FactGraphStore):
 
     async def graph_snapshot(self, session_id: str) -> Dict[str, List[Dict[str, Any]]]:
         facts = await self.session_facts(session_id)
-        entities = sorted({f.entity for f in facts})
+        relations = [r for r in self._relations if r.session_id == session_id]
+
+        # Entities are keyed by normalized name (`_entity_key`) everywhere, so
+        # "Milvus" and "MILVUS" collapse into one node instead of two clusters
+        # — display name is whichever form was first seen (facts, then relations).
+        display_by_key: Dict[str, str] = {}
+        for f in facts:
+            if f.entity:
+                display_by_key.setdefault(_entity_key(f.entity), f.entity)
+        for r in relations:
+            display_by_key.setdefault(r.source_key, r.source_name)
+            display_by_key.setdefault(r.target_key, r.target_name)
+
         nodes: List[Dict[str, Any]] = [
             {
                 "id": f.id,
@@ -173,12 +262,25 @@ class InMemoryFactGraph(FactGraphStore):
                 "stale_confidence": f.stale_confidence,
             }
             for f in facts
-        ] + [{"id": f"entity::{name}", "label": "Entity", "name": name} for name in entities]
+        ] + [
+            {"id": f"entity::{key}", "label": "Entity", "name": name}
+            for key, name in sorted(display_by_key.items(), key=lambda kv: kv[1])
+        ]
         edges: List[Dict[str, Any]] = []
         for fact in facts:
-            edges.append({"source": fact.id, "target": f"entity::{fact.entity}", "type": "ABOUT"})
+            if fact.entity:
+                edges.append({"source": fact.id, "target": f"entity::{_entity_key(fact.entity)}", "type": "ABOUT"})
             if fact.superseded_by:
                 edges.append({"source": fact.id, "target": fact.superseded_by, "type": "SUPERSEDED_BY"})
+        for r in relations:
+            edges.append(
+                {
+                    "source": f"entity::{r.source_key}",
+                    "target": f"entity::{r.target_key}",
+                    "type": "RELATES_TO",
+                    "label": r.label,
+                }
+            )
         return {"nodes": nodes, "edges": edges}
 
 
@@ -209,7 +311,8 @@ class Neo4jFactGraph(FactGraphStore):
         await self._run(
             """
             MERGE (s:Session {id: $session_id})
-            MERGE (e:Entity {session_id: $session_id, name: $entity})
+            MERGE (e:Entity {session_id: $session_id, key: $entity_key})
+            ON CREATE SET e.name = $entity
             CREATE (f:Fact {id: $id, session_id: $session_id, text: $text, status: $status, created_at: $created_at})
             CREATE (s)-[:HAS_FACT]->(f)
             CREATE (f)-[:ABOUT]->(e)
@@ -217,6 +320,7 @@ class Neo4jFactGraph(FactGraphStore):
             {
                 "session_id": session_id,
                 "entity": entity,
+                "entity_key": _entity_key(entity),
                 "id": node.id,
                 "text": node.text,
                 "status": node.status,
@@ -228,16 +332,43 @@ class Neo4jFactGraph(FactGraphStore):
     async def find_active_facts(self, session_id: str, entity: str) -> List[FactNode]:
         records = await self._run(
             """
-            MATCH (f:Fact {session_id: $session_id, status: $status})-[:ABOUT]->(e:Entity {name: $entity})
-            RETURN f.id AS id, f.text AS text, f.created_at AS created_at
+            MATCH (f:Fact {session_id: $session_id, status: $status})-[:ABOUT]->(e:Entity {session_id: $session_id, key: $entity_key})
+            RETURN f.id AS id, f.text AS text, f.created_at AS created_at, e.name AS entity
             ORDER BY f.created_at ASC
             """,
-            {"session_id": session_id, "entity": entity, "status": STATUS_ACTIVE},
+            {"session_id": session_id, "entity_key": _entity_key(entity), "status": STATUS_ACTIVE},
         )
         return [
-            FactNode(id=r["id"], session_id=session_id, text=r["text"], entity=entity, created_at=r["created_at"] or "")
+            FactNode(
+                id=r["id"], session_id=session_id, text=r["text"], entity=r["entity"] or entity,
+                created_at=r["created_at"] or "",
+            )
             for r in records
         ]
+
+    async def add_relation(self, session_id: str, source_entity: str, label: str, target_entity: str) -> bool:
+        source_key, target_key = _entity_key(source_entity), _entity_key(target_entity)
+        if not source_key or not target_key or source_key == target_key:
+            return False  # a "relation" to itself or an empty entity carries no information
+        await self._run(
+            """
+            MERGE (s:Session {id: $session_id})
+            MERGE (a:Entity {session_id: $session_id, key: $source_key})
+            ON CREATE SET a.name = $source_name
+            MERGE (b:Entity {session_id: $session_id, key: $target_key})
+            ON CREATE SET b.name = $target_name
+            MERGE (a)-[:RELATES_TO {session_id: $session_id, label: $label}]->(b)
+            """,
+            {
+                "session_id": session_id,
+                "source_key": source_key,
+                "source_name": (source_entity or "").strip(),
+                "target_key": target_key,
+                "target_name": (target_entity or "").strip(),
+                "label": (label or "relates to").strip(),
+            },
+        )
+        return True
 
     async def mark_stale(
         self,
@@ -334,7 +465,26 @@ class Neo4jFactGraph(FactGraphStore):
 
     async def graph_snapshot(self, session_id: str) -> Dict[str, List[Dict[str, Any]]]:
         facts = await self.session_facts(session_id)
-        entities = sorted({f.entity for f in facts if f.entity})
+        relation_records = await self._run(
+            """
+            MATCH (a:Entity {session_id: $session_id})-[r:RELATES_TO]->(b:Entity {session_id: $session_id})
+            RETURN a.key AS source_key, a.name AS source_name, r.label AS label,
+                   b.key AS target_key, b.name AS target_name
+            """,
+            {"session_id": session_id},
+        )
+
+        # Entities are keyed by normalized name (`_entity_key`) everywhere, so
+        # "Milvus" and "MILVUS" collapse into one node instead of two clusters
+        # — display name is whichever form was first seen (facts, then relations).
+        display_by_key: Dict[str, str] = {}
+        for f in facts:
+            if f.entity:
+                display_by_key.setdefault(_entity_key(f.entity), f.entity)
+        for r in relation_records:
+            display_by_key.setdefault(r["source_key"], r["source_name"] or r["source_key"])
+            display_by_key.setdefault(r["target_key"], r["target_name"] or r["target_key"])
+
         nodes: List[Dict[str, Any]] = [
             {
                 "id": f.id,
@@ -349,13 +499,25 @@ class Neo4jFactGraph(FactGraphStore):
                 "stale_confidence": f.stale_confidence,
             }
             for f in facts
-        ] + [{"id": f"entity::{name}", "label": "Entity", "name": name} for name in entities]
+        ] + [
+            {"id": f"entity::{key}", "label": "Entity", "name": name}
+            for key, name in sorted(display_by_key.items(), key=lambda kv: kv[1])
+        ]
         edges: List[Dict[str, Any]] = []
         for fact in facts:
             if fact.entity:
-                edges.append({"source": fact.id, "target": f"entity::{fact.entity}", "type": "ABOUT"})
+                edges.append({"source": fact.id, "target": f"entity::{_entity_key(fact.entity)}", "type": "ABOUT"})
             if fact.superseded_by:
                 edges.append({"source": fact.id, "target": fact.superseded_by, "type": "SUPERSEDED_BY"})
+        for r in relation_records:
+            edges.append(
+                {
+                    "source": f"entity::{r['source_key']}",
+                    "target": f"entity::{r['target_key']}",
+                    "type": "RELATES_TO",
+                    "label": r["label"],
+                }
+            )
         return {"nodes": nodes, "edges": edges}
 
     async def aclose(self) -> None:

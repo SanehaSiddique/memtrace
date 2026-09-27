@@ -55,7 +55,17 @@ _FACT_EXTRACTION_PROMPT = (
     "Example:\n"
     "Acme Corp: Switched database to PostgreSQL\n"
     "Alice: Prefers Python\n"
-    "If no facts are stated, output NONE."
+    "\n"
+    "If the user's statement also relates two distinct entities to each other "
+    "(e.g. \"X uses Y\", \"X depends on Y\", \"X is a customer of Y\"), ALSO output a "
+    "separate line in this exact format:\n"
+    "RELATION: EntityA | relation label | EntityB\n"
+    "Example:\n"
+    "RELATION: RAG pipeline | uses | Milvus\n"
+    "Only emit a RELATION line when the statement names two different entities and "
+    "a real connection between them — do not invent one.\n"
+    "\n"
+    "If no facts or relations are stated, output NONE."
 )
 
 
@@ -90,12 +100,23 @@ async def _emit_step(state: Agent2State, step: str, detail: Dict[str, Any]) -> N
 
 
 @dataclass
+class ExtractedContent:
+    """What one fact-extraction call found: per-entity facts, plus any
+    entity-to-entity relations the same statement implied (e.g. "the RAG
+    pipeline uses Milvus" -> a relation, not just two independent facts)."""
+
+    facts: List[Tuple[str, str]] = field(default_factory=list)  # (fact_text, entity)
+    relations: List[Tuple[str, str, str]] = field(default_factory=list)  # (source_entity, label, target_entity)
+
+
+@dataclass
 class BackgroundGraphWriteResult:
     """Outcome of the decoupled fact-extraction + staleness-resolution + graph-write
     (§4.2) — what the orchestrator needs to build the `graph_updated` event."""
 
     facts_added: int = 0
     facts_superseded: int = 0
+    relations_added: int = 0
     notes: List[str] = field(default_factory=list)
 
 
@@ -362,25 +383,33 @@ def build_agent2_graph(llm: LLMClient, tools: Graph8MCPClient, jev: JEVClient, m
         the response path (§4.2). Never touches `memory.append_turn` — that's the
         caller's job on the fast path, since the next turn's STM can't wait on this."""
         trace = AgentTurnTrace(agent_id=AGENT_ID)
-        extracted = await _extract_agent2_facts(llm, state, trace)
+        extracted = await _extract_agent2_content(llm, state, trace)
         res = await resolve_and_save_facts(
             graph_store=memory.graph_store,
             jev=jev,
             session_id=state["session_id"],
-            extracted_facts=extracted,
+            extracted_facts=extracted.facts,
             run_group_id=state.get("run_group_id", ""),
         )
+
+        relations_added = 0
+        for source_entity, label, target_entity in extracted.relations:
+            written = await memory.graph_store.add_relation(state["session_id"], source_entity, label, target_entity)
+            if written:
+                relations_added += 1
+
         return BackgroundGraphWriteResult(
             facts_added=res.new_facts_added,
             facts_superseded=res.facts_superseded,
+            relations_added=relations_added,
             notes=list(trace.notes) + list(res.notes),
         )
 
     return Agent2Graph(graph=compiled, run_background_graph_write=_run_background_graph_write)
 
 
-async def _extract_agent2_facts(llm: LLMClient, state: Agent2State, trace: AgentTurnTrace) -> List[Tuple[str, str]]:
-    """Extract (fact, entity) pairs from user message."""
+async def _extract_agent2_content(llm: LLMClient, state: Agent2State, trace: AgentTurnTrace) -> ExtractedContent:
+    """Extract (fact, entity) pairs and entity-to-entity relations from the user message."""
     try:
         response = await llm.chat(
             [{"role": "system", "content": _FACT_EXTRACTION_PROMPT}, {"role": "user", "content": state["user_message"]}],
@@ -391,12 +420,19 @@ async def _extract_agent2_facts(llm: LLMClient, state: Agent2State, trace: Agent
     except LLMUnavailableError as exc:
         trace.notes.append(f"extraction_fallback_verbatim: {exc}")
         text = (state["user_message"] or "").strip()
-        return [(text, "General")] if len(text) >= 8 else []
+        facts = [(text, "General")] if len(text) >= 8 else []
+        return ExtractedContent(facts=facts)
 
     pairs: List[Tuple[str, str]] = []
+    relations: List[Tuple[str, str, str]] = []
     lines = [line.strip() for line in (response.content or "").splitlines() if line.strip()]
     for line in lines:
         if line.upper() == "NONE":
+            continue
+        if line.upper().startswith("RELATION:"):
+            parts = [p.strip() for p in line.split(":", 1)[1].split("|")]
+            if len(parts) == 3 and all(parts):
+                relations.append((parts[0], parts[1], parts[2]))
             continue
         if ":" in line:
             parts = line.split(":", 1)
@@ -407,6 +443,6 @@ async def _extract_agent2_facts(llm: LLMClient, state: Agent2State, trace: Agent
         elif len(line) >= 8:
             pairs.append((line, "General"))
 
-    if not pairs:
+    if not pairs and not relations:
         trace.notes.append("no_facts_extracted")
-    return pairs
+    return ExtractedContent(facts=pairs, relations=relations)

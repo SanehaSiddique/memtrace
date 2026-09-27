@@ -332,8 +332,9 @@ class ComparisonOrchestrator:
                 event="graph_updated",
                 data={
                     "nodes_added": result.facts_added,
-                    "edges_added": result.facts_added + result.facts_superseded,
+                    "edges_added": result.facts_added + result.facts_superseded + result.relations_added,
                     "stale_marked": result.facts_superseded,
+                    "relations_added": result.relations_added,
                     "latency_ms": round(elapsed_ms, 2),
                     "jev_calls": jev_calls,
                     "cleaned": (clean_result.nodes_marked_stale if clean_result else 0),
