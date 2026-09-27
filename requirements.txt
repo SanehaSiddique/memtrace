@@ -4,6 +4,7 @@ pydantic>=2.9.0
 pydantic-settings
 aiosqlite
 httpx
+mcp
 langgraph
 langchain-core
 langsmith

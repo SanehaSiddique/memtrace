@@ -5,6 +5,7 @@ from app.agent.workflow import build_ingest_workflow, build_query_workflow
 from app.config import Settings
 from app.cost.repository import SQLiteCostRepository
 from app.cost.service import CostService
+from app.integrations.graph8 import Graph8MCPClient
 from app.judgment.factory import get_memory_judge
 from app.judgment.interface import BaseMemoryJudge
 from app.llm.factory import get_llm_client
@@ -24,16 +25,27 @@ class AppContainer:
         self.ingest_workflow = build_ingest_workflow(self.repository, self.llm_client, self.judge, self.default_subject)
         self.query_workflow = build_query_workflow(self.repository, self.llm_client)
         self.cost_service = CostService(SQLiteCostRepository(db_path=settings.memtrace_db_path))
+        self.g8_client = Graph8MCPClient(
+            api_key=settings.g8_api_key,
+            url=settings.g8_mcp_url,
+            allow_mutations=settings.g8_mcp_allow_mutations,
+        )
 
     @property
     def active_model_name(self) -> str:
         """Whichever model is actually answering, for honest cost-pricing lookups —
         `get_pricing()` falls back to a nonzero default for an unrecognized id, so
         this must reflect the model actually in use, not always `openai_model`."""
+        if self.settings.openai_api_key:
+            return self.settings.openai_model
         if self.settings.openrouter_api_key:
             return self.settings.openrouter_model
-        return self.settings.openai_model
+        return "offline"
+
 
     async def initialize(self) -> None:
         await self.repository.initialize()
         await self.cost_service.initialize()
+
+    async def close(self) -> None:
+        await self.g8_client.close()

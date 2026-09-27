@@ -35,6 +35,11 @@ class Settings(BaseSettings):
     # graph8 MCP (external intelligence layer)
     g8_api_key: Optional[str] = None
     g8_mcp_mode: str = "dev"
+    g8_mcp_url: str = "https://be.graph8.com/mcp/"
+    # The public demo API has no authentication of its own. Keep Graph8 writes,
+    # billable operations, and destructive tools disabled unless the operator
+    # deliberately opts in after putting suitable access controls in front of it.
+    g8_mcp_allow_mutations: bool = False
 
     # LangSmith Tracing
     langchain_tracing_v2: str = "false"

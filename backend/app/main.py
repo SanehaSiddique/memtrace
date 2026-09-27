@@ -25,7 +25,10 @@ async def lifespan(app: FastAPI):
     container = AppContainer(settings)
     await container.initialize()
     app.state.container = container
-    yield
+    try:
+        yield
+    finally:
+        await container.close()
 
 
 app = FastAPI(title="MEMTRACE", description="Memory and context control layer for long-running AI agents.", lifespan=lifespan)

@@ -30,5 +30,9 @@ class QueryRequest(BaseModel):
     recent_messages: List[str] = Field(default_factory=list)
 
 
+class Graph8ToolCallRequest(BaseModel):
+    arguments: Dict[str, Any] = Field(default_factory=dict)
+
+
 def resolve_agent_id(agent_id: Optional[str]) -> str:
     return agent_id or settings.memtrace_default_agent_id

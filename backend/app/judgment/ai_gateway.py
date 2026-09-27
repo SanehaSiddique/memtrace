@@ -3,7 +3,7 @@
 Confirmed live (see JEV_URL): this endpoint speaks the exact same "System One"
 wire contract TypeSafe's own SDK uses (`state` + `questions`, answers keyed by
 question name with `.choice`/`.confidence`) — just gateway-hosted under
-`model: "jev"` (canonical slug `typesafe-ai/jev`) with a Bearer AI_GATEWAY_API_KEY
+`model: "typesafe-ai/jev"` with a Bearer AI_GATEWAY_API_KEY
 instead of TYPESAFE_API_KEY. So this reuses the exact same bounded
 operation/memory_type criteria `JEVMemoryJudge` already authored, just over a
 plain httpx POST instead of the typesafe_sdk client.
@@ -25,7 +25,7 @@ from app.memory.models import (
     RelationType,
 )
 
-JEV_MODEL = "jev"
+JEV_MODEL = "typesafe-ai/jev"
 
 
 def _choice_question(instructions: str, criteria: dict) -> dict:
@@ -108,9 +108,12 @@ class AIGatewayJEVClient(BaseMemoryJudge):
 
         try:
             answers = result["answers"]
-            operation = MemoryOperationType(answers["operation"]["choice"])
+            operation_answer = answers["operation"]
+            operation = MemoryOperationType(operation_answer["choice"])
             memory_type = MemoryType(answers["memory_type"]["choice"])
-            confidence = float(answers["operation"].get("confidence", candidate.confidence))
+            # The native Vercel evaluation endpoint returns one probability per
+            # choice, rather than the TypeSafe SDK's singular `confidence`.
+            confidence = float(operation_answer.get("probabilities", {}).get(operation.value, candidate.confidence))
         except (KeyError, ValueError, TypeError):
             return self._fallback(candidate, "jev_fallback: unparseable AI Gateway response")
 
