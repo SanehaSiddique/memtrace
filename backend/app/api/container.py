@@ -22,6 +22,7 @@ from app.llm.interface import BaseLLMClient
 from app.memory.repository import BaseMemoryRepository, SQLiteMemoryRepository
 from app.memory.service import DEFAULT_SUBJECT, MemoryService
 from app.metrics.collector import SessionMetricsStore
+from app.metrics.history import ChatHistoryRepository
 from app.orchestrator import ComparisonOrchestrator
 
 
@@ -66,6 +67,10 @@ class AppContainer:
         self.agent1_memory: Optional[Agent1Memory] = None
         self.agent2_memory: Optional[Agent2Memory] = None
         self.metrics_store = SessionMetricsStore()
+        # Durable chat transcript. Same SQLite file as the cost store — it is
+        # already the app's persistence root and adding a second DB file would
+        # just mean two things to back up.
+        self.chat_history = ChatHistoryRepository(db_path=settings.memtrace_db_path)
         self.orchestrator: Optional[ComparisonOrchestrator] = None
 
     @property
@@ -75,6 +80,7 @@ class AppContainer:
     async def initialize(self) -> None:
         await self.repository.initialize()
         await self.cost_service.initialize()
+        await self.chat_history.initialize()
 
         # Connect databases (real or transparent memory fallbacks)
         self.facts_store = await open_facts_store(self.settings.postgres_url)
@@ -101,6 +107,10 @@ class AppContainer:
             agent1_memory=self.agent1_memory,
             agent2_memory=self.agent2_memory,
             metrics_store=self.metrics_store,
+            history=self.chat_history,
+            graph_clean_enabled=self.settings.graph_clean_enabled,
+            graph_clean_window=self.settings.graph_clean_window,
+            graph_clean_conflict_threshold=self.settings.graph_clean_conflict_threshold,
         )
 
     async def aclose(self) -> None:

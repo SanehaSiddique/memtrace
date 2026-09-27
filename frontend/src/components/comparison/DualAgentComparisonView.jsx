@@ -7,7 +7,9 @@ import CostComparison from "./CostComparison";
 import { useAgentSocket } from "../../hooks/useAgentSocket";
 import { api } from "../../api";
 
-export default function DualAgentComparisonView({ sessionId = "default_session" }) {
+export default function DualAgentComparisonView({ sessionId: initialSessionId = "default_session" }) {
+  const [sessionId, setSessionId] = useState(initialSessionId);
+  const [sessions, setSessions] = useState([]);
   const [inputText, setInputText] = useState("");
   const [activeTab, setActiveTab] = useState("chat"); // "chat" | "metrics" | "graph" | "cost"
 
@@ -47,6 +49,36 @@ export default function DualAgentComparisonView({ sessionId = "default_session" 
         }
       })
       .catch(() => {});
+  }, [sessionId]);
+
+  // Rehydrate the transcript from the server so a page reload doesn't wipe the
+  // conversation. The per-agent split is the server's job — each panel gets a
+  // self-contained transcript, so there's nothing to interleave here.
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([api.getChatHistory(sessionId, "agent1"), api.getChatHistory(sessionId, "agent2")])
+      .then(([a1, a2]) => {
+        if (cancelled) return;
+        const toMessages = (rows) =>
+          rows.map((r) => ({
+            id: r.id,
+            role: r.role,
+            content: r.content,
+            timestamp: new Date(r.created_at).toLocaleTimeString(),
+            toolCalls: r.tool_calls || [],
+            metrics: r.metrics || null,
+          }));
+        setA1Messages(toMessages(a1));
+        setA2Messages(toMessages(a2));
+        // A restored transcript means these panels are replaying history, not
+        // waiting on a live turn.
+        setA1Typing(false);
+        setA2Typing(false);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
   }, [sessionId]);
 
   // Handle incoming WebSocket events
@@ -205,6 +237,15 @@ export default function DualAgentComparisonView({ sessionId = "default_session" 
     }
   };
 
+  // Session list for the switcher, refreshed whenever a new turn lands so a
+  // freshly-created session shows up without a manual reload.
+  useEffect(() => {
+    api
+      .listChatSessions()
+      .then(setSessions)
+      .catch(() => {});
+  }, [sessionId, a1Messages.length]);
+
   return (
     <div className="dual-comparison-root">
       {/* Top Banner / Tab Navigation */}
@@ -243,9 +284,31 @@ export default function DualAgentComparisonView({ sessionId = "default_session" 
             </div>
           </div>
 
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <span style={{ fontSize: 12, color: connected ? "var(--green)" : connecting ? "var(--amber)" : "var(--red)" }}>
-              ● {connected ? "Live WebSocket Connected" : connecting ? "Connecting..." : "HTTP Fallback Mode"}
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            {sessions.length > 1 && (
+              <select
+                value={sessionId}
+                onChange={(e) => setSessionId(e.target.value)}
+                title="Switch between saved benchmark sessions"
+                style={{
+                  background: "var(--panel-2)",
+                  border: "1px solid var(--border)",
+                  color: "var(--text)",
+                  padding: "7px 10px",
+                  borderRadius: "var(--radius-sm)",
+                  fontSize: 12,
+                }}
+              >
+                {sessions.map((s) => (
+                  <option key={s.session_id} value={s.session_id}>
+                    {s.session_id} ({s.turns} turn{s.turns === 1 ? "" : "s"})
+                  </option>
+                ))}
+              </select>
+            )}
+            <span style={{ fontSize: 12, display: "inline-flex", alignItems: "center", color: connected ? "var(--green)" : connecting ? "var(--amber)" : "var(--red)" }}>
+              <span className={`live-dot ${connected ? "" : connecting ? "connecting" : "offline"}`} />
+              {connected ? "Live WebSocket Connected" : connecting ? "Connecting..." : "HTTP Fallback Mode"}
             </span>
             <button className="btn btn-ghost" onClick={handleReset} style={{ fontSize: 12 }}>
               Reset Session

@@ -63,6 +63,14 @@ class Settings(BaseSettings):
     neo4j_user: str = "neo4j"
     neo4j_password: str = "password"
 
+    # Post-response graph cleaning: after a turn is answered, JEV re-checks the
+    # most recent `window` graph nodes for contradictions, marks the older one
+    # of each conflicting pair stale, and classifies why. Retired nodes are
+    # always kept — there is no delete path (§6.1).
+    graph_clean_enabled: bool = True
+    graph_clean_window: int = 5
+    graph_clean_conflict_threshold: float = 0.6
+
 
     # LangSmith Tracing
     langchain_tracing_v2: str = "false"

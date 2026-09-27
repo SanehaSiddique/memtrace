@@ -7,17 +7,19 @@ from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisco
 
 from app.api.container import AppContainer
 from app.api.schemas import ChatRequest, IngestRequest, QueryRequest, resolve_agent_id
-from app.cost.models import ScaleProjectionRequest
-from app.cost.service import project_scale
-from app.demo.seed import seed_demo_data
-from app.evaluation.dataset import EVAL_CASES
-from app.evaluation.runner import run_evaluation
+from app.cost.models import RevenueProjectionRequest
+from app.cost.pricing import models_by_provider
+from app.cost.service import revenue_projection
 from app.memory.models import DebugQueryResult, GraphPathStep, MemoryEvent, MemoryOperationRecord, MemoryStatus
 from app.memory.retrieval import baseline_semantic_retrieve, hybrid_retrieve
 from app.metrics.schema import ChatEvent, TurnRequest
 from langsmith.run_helpers import get_current_run_tree, traceable
 
 router = APIRouter()
+
+# One representative model per provider, so the Executive comparison table is
+# populated on first load instead of showing a single row.
+DEFAULT_COMPARE_MODELS = ["claude-3-5-sonnet", "grok-3", "openai/gpt-oss-120b"]
 
 
 def _container(request: Request) -> AppContainer:
@@ -88,15 +90,6 @@ async def memory_graph_full(request: Request, agent_id: Optional[str] = None):
 async def memory_cost_impact(memory_id: str, request: Request):
     cost_avoided = await _container(request).cost_service.cost_impact_for_memory(memory_id)
     return {"memory_id": memory_id, "cost_avoided": cost_avoided}
-
-
-@router.post("/demo/seed")
-async def demo_seed(request: Request):
-    container = _container(request)
-    agent_id = container.settings.memtrace_default_agent_id
-    records = await seed_demo_data(container.memory_service, agent_id=agent_id)
-    await _record_lifecycle_impacts(container, agent_id, records)
-    return {"operations": [r.model_dump(mode="json") for r in records]}
 
 
 @router.post("/memory/ingest")
@@ -332,14 +325,6 @@ async def debug_replay(body: QueryRequest, request: Request):
     }
 
 
-@router.post("/evaluate")
-async def evaluate(request: Request):
-    container = _container(request)
-    agent_id = container.settings.memtrace_default_agent_id
-    report = await run_evaluation(container.repository, container.llm_client, agent_id, EVAL_CASES)
-    return report.model_dump(mode="json")
-
-
 # ---------------------------------------------------------------------------
 # Executive dashboard: cost/savings endpoints
 # ---------------------------------------------------------------------------
@@ -380,9 +365,31 @@ async def cost_runs(request: Request, agent_id: Optional[str] = None, limit: int
     return [r.model_dump(mode="json") for r in runs]
 
 
-@router.post("/cost/scale-projection")
-async def cost_scale_projection(body: ScaleProjectionRequest):
-    projection = project_scale(body.agents, body.runs_per_agent_per_day, body.cost_per_run, body.avoidable_pct)
+@router.get("/cost/models")
+async def cost_models():
+    """The priced model catalog, grouped by provider, for the model picker."""
+    return models_by_provider()
+
+
+@router.post("/cost/revenue-projection")
+async def cost_revenue_projection(body: RevenueProjectionRequest, request: Request):
+    """Agents x model x horizon economics, priced off measured token volumes.
+
+    `compare_models` defaults to one representative model per provider so the
+    CEO view has a populated comparison on first load instead of a table with
+    a single row.
+    """
+    container = _container(request)
+    compare = body.compare_models or DEFAULT_COMPARE_MODELS
+    projection = await revenue_projection(
+        repository=container.cost_service.repository,
+        agent_id=resolve_agent_id(body.agent_id),
+        agents=body.agents,
+        runs_per_agent_per_day=body.runs_per_agent_per_day,
+        current_model=body.current_model,
+        compare_models=compare,
+        revenue_per_agent_month=body.revenue_per_agent_month,
+    )
     return projection.model_dump(mode="json")
 
 
@@ -453,10 +460,33 @@ async def chat_compare(body: TurnRequest, request: Request):
     )
 
 
+@router.get("/api/chat/{session_id}/history")
+async def get_chat_history(session_id: str, request: Request, agent_id: Optional[str] = None, limit: int = 500):
+    """The durable transcript for a session, so a reload restores the chat.
+
+    Optionally narrowed to one agent. Returns rows ordered oldest-first; the
+    frontend renders each agent's subset into its own panel.
+    """
+    container = _container(request)
+    return await container.chat_history.list_session(session_id, agent_id=agent_id, limit=limit)
+
+
+@router.get("/api/chat/sessions")
+async def list_chat_sessions(request: Request):
+    """Every session with recorded history, most recent first."""
+    container = _container(request)
+    return await container.chat_history.list_sessions()
+
+
 @router.post("/api/chat/reset")
 async def chat_reset(request: Request, session_id: Optional[str] = None):
-    """Reset session metrics and in-memory caches for a fresh benchmark run."""
+    """Reset session metrics, in-memory caches, and the durable transcript.
+
+    Clears the transcript too — otherwise a "reset" would look like it worked
+    in the UI but the old messages would come back on the next reload.
+    """
     container = _container(request)
     container.metrics_store.clear(session_id)
-    return {"status": "ok", "cleared_session": session_id or "all"}
+    removed = await container.chat_history.clear(session_id)
+    return {"status": "ok", "cleared_session": session_id or "all", "history_rows_removed": removed}
 

@@ -28,12 +28,17 @@ export default function ChatPanel({
   const badgeClass = tagColor === "green" ? "badge badge-active" : "badge";
 
   return (
-    <div className="chat-panel card">
+    <div className={`chat-panel card ${isTyping ? "is-live" : ""}`}>
       <div className="chat-panel-header">
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <span className={badgeClass}>{agentId.toUpperCase()}</span>
             <h3 style={{ margin: 0, fontSize: 16 }}>{agentTitle}</h3>
+            {isTyping && (
+              <span style={{ fontSize: 11, color: "var(--violet)", fontWeight: 700, display: "inline-flex", alignItems: "center" }}>
+                <span className="live-dot" /> live
+              </span>
+            )}
           </div>
           <p className="card-note" style={{ margin: "4px 0 0 0" }}>
             {agentSubtitle}

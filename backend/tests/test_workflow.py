@@ -13,6 +13,10 @@ from app.memory.repository import SQLiteMemoryRepository
 
 
 class GeneralHelperLLM(MockLLMClient):
+    # This subclass really does answer questions, so it opts into the capability
+    # the base class sets False (see MockLLMClient.can_generate_text).
+    can_generate_text = True
+
     async def chat(self, system: str, user: str, temperature: float = 0.0) -> str:
         assert "general-purpose personal assistant" in system
         assert "answer from general knowledge" in system

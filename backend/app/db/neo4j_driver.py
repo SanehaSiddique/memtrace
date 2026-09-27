@@ -49,6 +49,12 @@ class FactNode:
     created_at: str = field(default_factory=_iso_now)
     superseded_by: Optional[str] = None
     supersedes: Optional[str] = None
+    # Why this fact was retired, assigned by JEV when the conflict was
+    # confirmed. Empty while the fact is still active. Drives the "classified
+    # by JEV" grouping in the graph sidebar.
+    stale_class: str = ""
+    stale_reason: str = ""
+    stale_confidence: float = 0.0
 
 
 class FactGraphStore(ABC):
@@ -65,7 +71,18 @@ class FactGraphStore(ABC):
     async def find_active_facts(self, session_id: str, entity: str) -> List[FactNode]: ...
 
     @abstractmethod
-    async def mark_stale(self, old_fact_id: str, new_fact_id: str, session_id: str) -> None: ...
+    async def mark_stale(
+        self,
+        old_fact_id: str,
+        new_fact_id: str,
+        session_id: str,
+        stale_class: str = "",
+        stale_reason: str = "",
+        stale_confidence: float = 0.0,
+    ) -> None: ...
+
+    @abstractmethod
+    async def recent_facts(self, session_id: str, limit: int) -> List[FactNode]: ...
 
     @abstractmethod
     async def session_facts(self, session_id: str) -> List[FactNode]: ...
@@ -104,14 +121,35 @@ class InMemoryFactGraph(FactGraphStore):
             if fact.session_id == session_id and fact.entity == entity and fact.status == STATUS_ACTIVE
         ]
 
-    async def mark_stale(self, old_fact_id: str, new_fact_id: str, session_id: str) -> None:
+    async def mark_stale(
+        self,
+        old_fact_id: str,
+        new_fact_id: str,
+        session_id: str,
+        stale_class: str = "",
+        stale_reason: str = "",
+        stale_confidence: float = 0.0,
+    ) -> None:
         old = self._facts.get(old_fact_id)
         new = self._facts.get(new_fact_id)
         if old is None or new is None or old.session_id != session_id:
             return
         old.status = STATUS_STALE
         old.superseded_by = new_fact_id
+        old.stale_class = stale_class
+        old.stale_reason = stale_reason
+        old.stale_confidence = stale_confidence
         new.supersedes = old_fact_id
+
+    async def recent_facts(self, session_id: str, limit: int) -> List[FactNode]:
+        """The `limit` most recently created facts, oldest-first.
+
+        Used by the post-response graph-cleaning pass, which inspects a small
+        recent window rather than the whole session.
+        """
+        facts = [f for f in self._facts.values() if f.session_id == session_id]
+        facts.sort(key=lambda f: f.created_at)
+        return facts[-limit:] if limit > 0 else []
 
     async def session_facts(self, session_id: str) -> List[FactNode]:
         facts = [f for f in self._facts.values() if f.session_id == session_id]
@@ -122,7 +160,18 @@ class InMemoryFactGraph(FactGraphStore):
         facts = await self.session_facts(session_id)
         entities = sorted({f.entity for f in facts})
         nodes: List[Dict[str, Any]] = [
-            {"id": f.id, "label": "Fact", "text": f.text, "status": f.status, "entity": f.entity, "created_at": f.created_at}
+            {
+                "id": f.id,
+                "label": "Fact",
+                "text": f.text,
+                "status": f.status,
+                "entity": f.entity,
+                "created_at": f.created_at,
+                "superseded_by": f.superseded_by,
+                "stale_class": f.stale_class,
+                "stale_reason": f.stale_reason,
+                "stale_confidence": f.stale_confidence,
+            }
             for f in facts
         ] + [{"id": f"entity::{name}", "label": "Entity", "name": name} for name in entities]
         edges: List[Dict[str, Any]] = []
@@ -190,17 +239,65 @@ class Neo4jFactGraph(FactGraphStore):
             for r in records
         ]
 
-    async def mark_stale(self, old_fact_id: str, new_fact_id: str, session_id: str) -> None:
-        """Never destroy a stale fact — mark it and link it (§6.1, §6.4)."""
+    async def mark_stale(
+        self,
+        old_fact_id: str,
+        new_fact_id: str,
+        session_id: str,
+        stale_class: str = "",
+        stale_reason: str = "",
+        stale_confidence: float = 0.0,
+    ) -> None:
+        """Never destroy a stale fact — mark it, classify it, and link it (§6.1, §6.4)."""
         await self._run(
             """
             MATCH (old:Fact {id: $old_id, session_id: $session_id})
             MATCH (new:Fact {id: $new_id, session_id: $session_id})
-            SET old.status = $stale
-            CREATE (old)-[:SUPERSEDED_BY]->(new)
+            SET old.status = $stale,
+                old.stale_class = $stale_class,
+                old.stale_reason = $stale_reason,
+                old.stale_confidence = $stale_confidence
+            MERGE (old)-[:SUPERSEDED_BY]->(new)
             """,
-            {"old_id": old_fact_id, "new_id": new_fact_id, "session_id": session_id, "stale": STATUS_STALE},
+            {
+                "old_id": old_fact_id,
+                "new_id": new_fact_id,
+                "session_id": session_id,
+                "stale": STATUS_STALE,
+                "stale_class": stale_class,
+                "stale_reason": stale_reason,
+                "stale_confidence": float(stale_confidence),
+            },
         )
+
+    async def recent_facts(self, session_id: str, limit: int) -> List[FactNode]:
+        """The `limit` newest facts, returned oldest-first (newest window)."""
+        if limit <= 0:
+            return []
+        records = await self._run(
+            """
+            MATCH (f:Fact {session_id: $session_id})
+            OPTIONAL MATCH (f)-[:ABOUT]->(e:Entity)
+            RETURN f.id AS id, f.text AS text, f.status AS status, f.created_at AS created_at,
+                   coalesce(e.name, '') AS entity
+            ORDER BY f.created_at DESC
+            LIMIT $limit
+            """,
+            {"session_id": session_id, "limit": limit},
+        )
+        nodes = [
+            FactNode(
+                id=r["id"],
+                session_id=session_id,
+                text=r["text"],
+                entity=r["entity"] or "",
+                status=r["status"] or STATUS_ACTIVE,
+                created_at=r["created_at"] or "",
+            )
+            for r in records
+        ]
+        nodes.reverse()  # oldest-first within the window
+        return nodes
 
     async def session_facts(self, session_id: str) -> List[FactNode]:
         records = await self._run(
@@ -210,7 +307,10 @@ class Neo4jFactGraph(FactGraphStore):
             OPTIONAL MATCH (f)-[:SUPERSEDED_BY]->(n:Fact)
             OPTIONAL MATCH (p:Fact)-[:SUPERSEDED_BY]->(f)
             RETURN f.id AS id, f.text AS text, f.status AS status, f.created_at AS created_at,
-                   coalesce(e.name, '') AS entity, n.id AS superseded_by, p.id AS supersedes
+                   coalesce(e.name, '') AS entity, n.id AS superseded_by, p.id AS supersedes,
+                   coalesce(f.stale_class, '') AS stale_class,
+                   coalesce(f.stale_reason, '') AS stale_reason,
+                   coalesce(f.stale_confidence, 0.0) AS stale_confidence
             ORDER BY f.created_at ASC
             """,
             {"session_id": session_id},
@@ -225,6 +325,9 @@ class Neo4jFactGraph(FactGraphStore):
                 created_at=r["created_at"] or "",
                 superseded_by=r["superseded_by"],
                 supersedes=r["supersedes"],
+                stale_class=r["stale_class"] or "",
+                stale_reason=r["stale_reason"] or "",
+                stale_confidence=float(r["stale_confidence"] or 0.0),
             )
             for r in records
         ]
@@ -241,6 +344,9 @@ class Neo4jFactGraph(FactGraphStore):
                 "entity": f.entity,
                 "created_at": f.created_at,
                 "superseded_by": f.superseded_by,
+                "stale_class": f.stale_class,
+                "stale_reason": f.stale_reason,
+                "stale_confidence": f.stale_confidence,
             }
             for f in facts
         ] + [{"id": f"entity::{name}", "label": "Entity", "name": name} for name in entities]

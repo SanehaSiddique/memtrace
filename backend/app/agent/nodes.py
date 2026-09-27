@@ -7,6 +7,7 @@ interfaces, injected via closures from `app.agent.workflow`, never on a
 concrete database or provider.
 """
 
+from app.agent.answering import synthesize_offline_answer
 from app.context.builder import build_context
 from app.judgment.interface import BaseMemoryJudge
 from app.llm.errors import LLMUnavailableError
@@ -103,11 +104,17 @@ def make_generate_response_node(llm_client: BaseLLMClient):
         answer_note = None
         answer = None
 
-        if llm_client.is_live:
+        # `is_live` is the primary signal. Some local/test clients are not "live"
+        # yet genuinely answer questions, so a client that declares the
+        # `can_generate_text` capability counts too — MockLLMClient explicitly
+        # sets it False, since it overrides `chat` only to refuse it.
+        can_generate = llm_client.is_live or getattr(llm_client, "can_generate_text", False)
+
+        if can_generate:
             try:
                 answer, _usage, model = await llm_client.chat_with_usage(_ANSWER_SYSTEM_PROMPT, context.context_text)
                 answer_source = f"llm:{model}"
-            except LLMUnavailableError as exc:
+            except (LLMUnavailableError, NotImplementedError) as exc:
                 answer = synthesize_offline_answer(state["selected_memories"])
                 answer_source = "memory_fallback"
                 answer_note = (
@@ -119,7 +126,7 @@ def make_generate_response_node(llm_client: BaseLLMClient):
 
         trace_metadata = {
             "retrieval_mode": "hybrid",
-            "llm_provider": llm_client.provider_name,
+            "llm_provider": getattr(llm_client, "provider", "unknown"),
             "llm_model": llm_client.model_name,
             "selected_memory_count": len(state["selected_memories"]),
             "excluded_memory_count": len(state["excluded_memories"]),

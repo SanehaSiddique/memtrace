@@ -3,7 +3,7 @@ import { api, DEFAULT_AGENT_ID, DEFAULT_CONVERSATION_ID } from "../../api";
 import Hero from "./Hero";
 import SavingsChart from "./SavingsChart";
 import MemoryRoi from "./MemoryRoi";
-import ScaleCalculator from "./ScaleCalculator";
+import RevenueOutlook from "./RevenueOutlook";
 import MoneyLeaks from "./MoneyLeaks";
 import BeforeAfter from "./BeforeAfter";
 import WhySavedDrawer from "./WhySavedDrawer";
@@ -127,16 +127,19 @@ export default function ExecutiveView({ refreshSignal = 0 }) {
 
       <div className="section">
         <div className="section-heading">
-          <h2>What happens at your scale?</h2>
-          <p>Move the sliders — this updates instantly.</p>
+          <h2>Revenue & model mix at your scale</h2>
+          <p>
+            Agents × model × week/month/year, priced off the token volumes your pipeline actually recorded — not an
+            average.
+          </p>
         </div>
         <div className="card">
-          <ScaleCalculator />
+          <RevenueOutlook refreshSignal={combinedSignal} />
         </div>
       </div>
 
       <div className="section card">
-        <h3 className="card-title">$0.023 looks small…</h3>
+        <h3 className="card-title">One avoided run, scaled up</h3>
         <BeforeAfter summary={summary} />
       </div>
 

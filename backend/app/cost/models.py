@@ -100,21 +100,83 @@ class MemoryRoiSummary(BaseModel):
     data_source_note: str
 
 
-class ScaleProjection(BaseModel):
-    agents: int
-    runs_per_agent_per_day: int
-    cost_per_run: float
-    avoidable_pct: float
-    daily_savings: float
+# ---------- Executive "Revenue & Model Mix" projection ----------
+
+# Horizon in days, used to turn a measured per-run token volume into a period
+# total. Weekly/monthly/annual are all requested by the CEO view, so they are
+# named once here rather than spelled as magic numbers at each call site.
+HORIZONS = {"weekly": 7, "monthly": 30, "annual": 365}
+
+
+class UsageProfile(BaseModel):
+    """Measured per-run token volumes, averaged across real recorded runs.
+
+    This is what makes the projection *precise* rather than an average: the
+    numbers come from `run_costs` rows the pipeline actually wrote (real
+    retrieved-vs-selected context sizes), not a hand-typed "$0.08 per run".
+    """
+
+    baseline_input_tokens: int
+    optimized_input_tokens: int
+    output_tokens: int
+    measured_runs: int
+    is_measured: bool  # False => fell back to a documented default
+    data_source_note: str
+
+
+class ModelProjectionRow(BaseModel):
+    """One model's cost at the requested fleet size, across all three horizons."""
+
+    model: str
+    label: str
+    provider: str
+    input_per_1k: float
+    output_per_1k: float
+    weekly_gross: float
+    monthly_gross: float
+    annual_gross: float
+    weekly_with_memtrace: float
+    monthly_with_memtrace: float
+    annual_with_memtrace: float
+    weekly_savings: float
     monthly_savings: float
     annual_savings: float
+    savings_pct: float
+    # Signed difference against the model the user currently runs. Negative
+    # means this model is cheaper than the incumbent.
+    monthly_delta_vs_current: float
+    annual_delta_vs_current: float
 
 
-class ScaleProjectionRequest(BaseModel):
+class RevenueProjectionRequest(BaseModel):
+    agent_id: Optional[str] = None
     agents: int = 100
     runs_per_agent_per_day: int = 500
-    cost_per_run: float = 0.08
-    avoidable_pct: float = 22.0
+    current_model: str = "gpt-4o-mini"
+    compare_models: List[str] = Field(default_factory=list)
+    # Revenue per agent per month, so the view can express AI spend as a
+    # share of revenue and savings as margin points rather than only dollars.
+    revenue_per_agent_month: float = 0.0
+
+
+class RevenueProjection(BaseModel):
+    agents: int
+    runs_per_agent_per_day: int
+    current_model: str
+    runs_per_day: int
+    weekly_runs: int
+    monthly_runs: int
+    annual_runs: int
+    profile: UsageProfile
+    rows: List[ModelProjectionRow]
+    # CEO framing (only meaningful when revenue_per_agent_month > 0).
+    monthly_revenue: float
+    annual_revenue: float
+    current_model_annual_spend_pct_of_revenue: float
+    best_model: Optional[str] = None
+    best_model_annual_savings: float = 0.0
+    margin_points_recovered: float = 0.0
+    data_source_note: str
 
 
 def empty_summary(note: str) -> CostSummary:

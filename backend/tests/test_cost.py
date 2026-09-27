@@ -1,17 +1,47 @@
 """The cost service turns real retrieval output into dollar figures. Verify
 the math is honest: savings should be zero when nothing was excluded, and
-positive when MEMTRACE actually trimmed stale/irrelevant memories out."""
+positive when MEMTRACE actually trimmed stale/irrelevant memories out.
+
+The facts below are written by the test itself rather than pulled from a
+`/demo/seed` endpoint. Seeding exists only to be clicked in a UI; a test that
+depends on it fails for reasons unrelated to what it is checking, and it would
+keep the demo-story fixture alive in the codebase for no reason.
+"""
 
 import pytest
 
 from app.cost.repository import SQLiteCostRepository
-from app.cost.service import CostService, project_scale
-from app.demo.seed import seed_demo_data
+from app.cost.service import CostService
 from app.judgment.mock import MockMemoryJudge
 from app.llm.mock import MockLLMClient
+from app.memory.models import MemoryEvent
 from app.memory.repository import SQLiteMemoryRepository
 from app.memory.retrieval import apply_temporal_filter, score_and_rank, traverse_graph, retrieve_semantic
 from app.memory.service import DEFAULT_SUBJECT, MemoryService
+
+# A minimal two-fact conflict: an old database choice and the migration away
+# from it, so the temporal filter has something real to exclude.
+CONFLICTING_FACTS = [
+    "The team uses MySQL as the primary datastore.",
+    "We migrated the primary datastore from MySQL to PostgreSQL.",
+]
+
+
+async def _seed_conflict(service, agent_id="agent-alpha"):
+    """Ingest a small, genuine contradiction so the temporal filter has real
+    work to do. Uses the same event path the API uses — no test-only shortcut."""
+    from datetime import datetime, timezone
+
+    for content in CONFLICTING_FACTS:
+        await service.ingest_event(
+            MemoryEvent(
+                conversation_id="test_conversation",
+                agent_id=agent_id,
+                speaker="user",
+                content=content,
+                timestamp=datetime.now(timezone.utc),
+            )
+        )
 
 
 @pytest.mark.asyncio
@@ -20,7 +50,7 @@ async def test_record_run_reflects_real_exclusions(tmp_path):
     await repo.initialize()
     llm = MockLLMClient()
     service = MemoryService(repo, llm, MockMemoryJudge(), default_subject=DEFAULT_SUBJECT)
-    await seed_demo_data(service, agent_id="agent-alpha")
+    await _seed_conflict(service)
 
     cost_repo = SQLiteCostRepository(db_path=str(tmp_path / "cost.db"))
     await cost_repo.initialize()
@@ -31,7 +61,7 @@ async def test_record_run_reflects_real_exclusions(tmp_path):
     candidates = await traverse_graph(repo, candidates)
     ranked = score_and_rank(candidates, top_k=8)
     selected, excluded = apply_temporal_filter(query, ranked)
-    assert excluded  # the flagship case: MongoDB should be excluded
+    assert excluded  # the old datastore must be excluded, not both kept
 
     run = await cost_service.record_run(
         agent_id="agent-alpha",
@@ -41,7 +71,7 @@ async def test_record_run_reflects_real_exclusions(tmp_path):
         retrieved=ranked,
         selected=selected,
         excluded=excluded,
-        answer="Project Alpha uses database PostgreSQL.",
+        answer="The team uses PostgreSQL.",
     )
 
     assert run.savings > 0
@@ -150,10 +180,3 @@ async def test_timeseries_granularity_buckets_by_month(tmp_path):
     assert len(monthly) == 1
     assert monthly[0].date == "2026-01-01"
     assert monthly[0].cumulative_savings == pytest.approx(0.015)
-
-
-def test_project_scale_is_pure_arithmetic():
-    projection = project_scale(agents=100, runs_per_agent_per_day=500, cost_per_run=0.08, avoidable_pct=22.0)
-    assert projection.daily_savings == pytest.approx(100 * 500 * 0.08 * 0.22)
-    assert projection.monthly_savings == pytest.approx(projection.daily_savings * 30)
-    assert projection.annual_savings == pytest.approx(projection.daily_savings * 365)

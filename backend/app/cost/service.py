@@ -13,6 +13,7 @@ from typing import List, Optional
 
 from app.context.builder import estimate_tokens
 from app.cost.models import (
+    HORIZONS,
     LEAK_LABELS,
     MEMORY_ROI_LABELS,
     CostSummary,
@@ -20,9 +21,11 @@ from app.cost.models import (
     MemoryCostImpact,
     MemoryRoiRow,
     MemoryRoiSummary,
+    ModelProjectionRow,
+    RevenueProjection,
     RunRecord,
-    ScaleProjection,
     TimeseriesPoint,
+    UsageProfile,
     empty_summary,
 )
 from app.cost.pricing import get_pricing
@@ -287,14 +290,165 @@ class CostService:
         return sum(i.cost_avoided for i in impacts)
 
 
-def project_scale(agents: int, runs_per_agent_per_day: int, cost_per_run: float, avoidable_pct: float) -> ScaleProjection:
-    daily = agents * runs_per_agent_per_day * cost_per_run * (avoidable_pct / 100)
-    return ScaleProjection(
+# Fallback per-run token volumes, used only when no runs have been recorded
+# yet. These are the same shape `record_run` measures (baseline context,
+# optimized context, answer) so switching to measured data later is a drop-in
+# change rather than a different calculation.
+DEFAULT_BASELINE_TOKENS = 4000
+DEFAULT_OPTIMIZED_TOKENS = 1200
+DEFAULT_OUTPUT_TOKENS = 300
+
+
+def _round2(value: float) -> float:
+    return round(value + 0.0, 2)
+
+
+async def usage_profile(repository, agent_id: str) -> UsageProfile:
+    """Average the token volumes the pipeline actually recorded for this agent.
+
+    This is what makes the projection precise rather than an average: the
+    numbers come from real `run_costs` rows (context the retriever surfaced
+    before the memory filter vs. context actually sent to the model), not a
+    hand-typed "$0.08 per run".
+    """
+    runs = await repository.list_all(agent_id)
+    if not runs:
+        return UsageProfile(
+            baseline_input_tokens=DEFAULT_BASELINE_TOKENS,
+            optimized_input_tokens=DEFAULT_OPTIMIZED_TOKENS,
+            output_tokens=DEFAULT_OUTPUT_TOKENS,
+            measured_runs=0,
+            is_measured=False,
+            data_source_note=(
+                "No recorded runs yet — using a documented default per-run token profile "
+                "(4k baseline context, 1.2k selected context, 300 answer tokens). "
+                "Run the benchmark to replace this with measured volumes."
+            ),
+        )
+
+    n = len(runs)
+    return UsageProfile(
+        baseline_input_tokens=round(sum(r.baseline_tokens for r in runs) / n),
+        optimized_input_tokens=round(sum(r.optimized_tokens for r in runs) / n),
+        output_tokens=round(sum(r.output_tokens for r in runs) / n),
+        measured_runs=n,
+        is_measured=True,
+        data_source_note=(
+            f"Measured across {n} recorded run(s): the average context the retriever surfaced "
+            "before the memory filter vs. the context actually sent to the model."
+        ),
+    )
+
+
+def model_projection(model: str, profile: UsageProfile, runs_per_period: dict) -> ModelProjectionRow:
+    """Price one model at a fleet size, for all three horizons at once."""
+    pricing = get_pricing(model)
+    # Output tokens are billed on every run regardless of memory filtering, so
+    # they are identical in the gross and with-MEMTRACE columns; only the input
+    # side shrinks.
+    output_cost_per_run = (profile.output_tokens / 1000) * pricing.output_per_1k
+    gross_input_per_run = (profile.baseline_input_tokens / 1000) * pricing.input_per_1k
+    optimized_input_per_run = (profile.optimized_input_tokens / 1000) * pricing.input_per_1k
+
+    row = ModelProjectionRow(
+        model=model,
+        label=pricing.label or model,
+        provider=pricing.provider,
+        input_per_1k=pricing.input_per_1k,
+        output_per_1k=pricing.output_per_1k,
+        weekly_gross=0.0,
+        monthly_gross=0.0,
+        annual_gross=0.0,
+        weekly_with_memtrace=0.0,
+        monthly_with_memtrace=0.0,
+        annual_with_memtrace=0.0,
+        weekly_savings=0.0,
+        monthly_savings=0.0,
+        annual_savings=0.0,
+        savings_pct=0.0,
+        monthly_delta_vs_current=0.0,
+        annual_delta_vs_current=0.0,
+    )
+
+    for horizon, run_count in runs_per_period.items():
+        gross = (gross_input_per_run + output_cost_per_run) * run_count
+        with_memtrace = (optimized_input_per_run + output_cost_per_run) * run_count
+        setattr(row, f"{horizon}_gross", _round2(gross))
+        setattr(row, f"{horizon}_with_memtrace", _round2(with_memtrace))
+        setattr(row, f"{horizon}_savings", _round2(gross - with_memtrace))
+
+    row.savings_pct = _round2((row.monthly_savings / row.monthly_gross * 100) if row.monthly_gross > 0 else 0.0)
+    return row
+
+
+async def revenue_projection(
+    repository,
+    agent_id: str,
+    agents: int,
+    runs_per_agent_per_day: int,
+    current_model: str,
+    compare_models: Optional[List[str]] = None,
+    revenue_per_agent_month: float = 0.0,
+) -> RevenueProjection:
+    """Fleet economics for the Executive view: agents x model x horizon.
+
+    Nothing here is a hand-entered average. The token volume is measured from
+    recorded runs, the rate is the model's published price, and the deltas are
+    arithmetic differences between those — so raising the agent count or
+    switching OpenAI -> Claude moves the number for a traceable reason.
+    """
+    agents = max(1, int(agents))
+    runs_per_agent_per_day = max(1, int(runs_per_agent_per_day))
+
+    profile = await usage_profile(repository, agent_id)
+    runs_per_day = agents * runs_per_agent_per_day
+    runs_per_period = {h: runs_per_day * d for h, d in HORIZONS.items()}
+
+    # Always price the incumbent plus whatever the caller asked to compare.
+    # Unknown names still get a row (flagged as unpriced) rather than silently
+    # vanishing from the comparison.
+    models: List[str] = [current_model]
+    for m in compare_models or []:
+        if m and m not in models:
+            models.append(m)
+
+    rows = [model_projection(m, profile, runs_per_period) for m in models]
+    current_row = next(r for r in rows if r.model == current_model)
+    for r in rows:
+        r.monthly_delta_vs_current = _round2(r.monthly_with_memtrace - current_row.monthly_with_memtrace)
+        r.annual_delta_vs_current = _round2(r.annual_with_memtrace - current_row.annual_with_memtrace)
+
+    # "Best" = lowest annual spend *with* MEMTRACE, but only if it actually
+    # beats the incumbent. Reporting a "winner" that costs more would be
+    # dishonest, so in that case the incumbent is the answer.
+    cheapest = min(rows, key=lambda r: r.annual_with_memtrace)
+    best_model: Optional[str] = None
+    best_savings = 0.0
+    if cheapest.model != current_model and cheapest.annual_with_memtrace < current_row.annual_with_memtrace:
+        best_model = cheapest.model
+        best_savings = current_row.annual_with_memtrace - cheapest.annual_with_memtrace
+
+    monthly_revenue = agents * revenue_per_agent_month
+    annual_revenue = monthly_revenue * 12
+    margin_points = round((best_savings / annual_revenue) * 100, 3) if (annual_revenue > 0 and best_model) else 0.0
+
+    return RevenueProjection(
         agents=agents,
         runs_per_agent_per_day=runs_per_agent_per_day,
-        cost_per_run=cost_per_run,
-        avoidable_pct=avoidable_pct,
-        daily_savings=daily,
-        monthly_savings=daily * 30,
-        annual_savings=daily * 365,
+        current_model=current_model,
+        runs_per_day=runs_per_day,
+        weekly_runs=runs_per_period["weekly"],
+        monthly_runs=runs_per_period["monthly"],
+        annual_runs=runs_per_period["annual"],
+        profile=profile,
+        rows=rows,
+        monthly_revenue=_round2(monthly_revenue),
+        annual_revenue=_round2(annual_revenue),
+        current_model_annual_spend_pct_of_revenue=(
+            round((current_row.annual_with_memtrace / annual_revenue) * 100, 3) if annual_revenue > 0 else 0.0
+        ),
+        best_model=best_model,
+        best_model_annual_savings=_round2(best_savings),
+        margin_points_recovered=margin_points,
+        data_source_note=profile.data_source_note + " Figures are a configured-price projection, not live provider billing.",
     )

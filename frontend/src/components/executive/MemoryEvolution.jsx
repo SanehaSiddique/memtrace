@@ -43,7 +43,7 @@ export default function MemoryEvolution({ agentId, refreshSignal }) {
 
   if (timeline.length === 0) {
     return (
-      <div className="empty-note">No memory events yet — seed demo data to see how the agent's knowledge evolved.</div>
+      <div className="empty-note">No memory events yet. Ask the agent something, then check back to see how its knowledge changed.</div>
     );
   }
 

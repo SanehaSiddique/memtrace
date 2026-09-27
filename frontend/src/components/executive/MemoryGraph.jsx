@@ -38,7 +38,7 @@ export default function MemoryGraph({ agentId, avgSavingsPerRun, refreshSignal }
 
   if (loading) return <div className="empty-note">Loading memory graph…</div>;
   if (nodes.length === 0) {
-    return <div className="empty-note">No memory yet — seed demo data to see your agent's memory here.</div>;
+    return <div className="empty-note">No memory yet. Run a prompt in the live benchmark that states a fact, and it will appear here.</div>;
   }
 
   const byId = Object.fromEntries(nodes.map((n) => [n.id, n]));

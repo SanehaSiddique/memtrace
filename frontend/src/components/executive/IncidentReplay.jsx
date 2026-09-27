@@ -50,7 +50,7 @@ export default function IncidentReplay({ agentId, avgSavingsPerRun, refreshSigna
   if (!state.incident) {
     return (
       <div className="empty-note">
-        No stale-memory incident found in the current demo data — seed demo data first, then check back here.
+        No stale-memory incident found yet. Let the agent learn two conflicting facts and it will show up here automatically.
       </div>
     );
   }

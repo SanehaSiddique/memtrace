@@ -25,7 +25,6 @@ async function request(path, { method = "GET", body, params } = {}) {
 export const api = {
   health: () => request("/health"),
 
-  seedDemo: () => request("/demo/seed", { method: "POST" }),
   listMemory: (agentId, status) => request("/memory", { params: { agent_id: agentId, status } }),
   getMemoryGraph: (memoryId) => request(`/memory/${memoryId}/graph`),
   getMemoryHistory: (memoryId) => request(`/memory/${memoryId}/history`),
@@ -44,21 +43,24 @@ export const api = {
   debugReplay: (query, agentId, conversationId) =>
     request("/debug/replay", { method: "POST", body: { query, agent_id: agentId, conversation_id: conversationId } }),
 
-  evaluate: () => request("/evaluate", { method: "POST" }),
 
   costSummary: (agentId) => request("/cost/summary", { params: { agent_id: agentId } }),
   costTimeseries: (agentId, granularity = "day") =>
     request("/cost/timeseries", { params: { agent_id: agentId, granularity } }),
   costLeaks: (agentId) => request("/cost/leaks", { params: { agent_id: agentId } }),
   costRuns: (agentId, limit = 20) => request("/cost/runs", { params: { agent_id: agentId, limit } }),
-  scaleProjection: (body) => request("/cost/scale-projection", { method: "POST", body }),
   memoryRoi: (agentId) => request("/cost/memory-roi", { params: { agent_id: agentId } }),
+  costModels: () => request("/cost/models"),
+  revenueProjection: (body) => request("/cost/revenue-projection", { method: "POST", body }),
 
   // Dual-Agent Benchmarking & Tracing Endpoints (docs §8)
   getGraphSnapshot: (sessionId) => request(`/api/graph/${sessionId}`),
   getSessionMetrics: (sessionId) => request(`/api/metrics/${sessionId}`),
   chatCompare: (message, sessionId = "default_session") =>
     request("/api/chat/compare", { method: "POST", body: { message, session_id: sessionId } }),
+  getChatHistory: (sessionId, agentId) =>
+    request(`/api/chat/${encodeURIComponent(sessionId)}/history`, { params: { agent_id: agentId } }),
+  listChatSessions: () => request("/api/chat/sessions"),
   resetSession: (sessionId) =>
     request(`/api/chat/reset${sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ""}`, { method: "POST" }),
 

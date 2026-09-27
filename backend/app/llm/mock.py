@@ -19,6 +19,13 @@ class MockLLMClient(BaseLLMClient):
     provider = "mock"
     model_name = "mock-hashing-embedder"
 
+    # This class *overrides* `chat` purely to refuse it (it only exists to satisfy
+    # the abstract base). Callers must therefore treat it as unable to generate
+    # free-form text, even though a naive "did you override chat?" check would
+    # wrongly say otherwise. Subclasses that really do answer questions should set
+    # this to True.
+    can_generate_text = False
+
     async def chat(self, system: str, user: str, temperature: float = 0.0) -> str:
         raise NotImplementedError(
             "MockLLMClient cannot generate free-form text; callers must provide a "

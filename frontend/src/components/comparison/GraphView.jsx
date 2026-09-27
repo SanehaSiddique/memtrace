@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../api";
+import { classMeta, groupByStaleClass } from "../../graphUtils";
 
 /**
  * Neo4j Fact Knowledge Graph — animated, entity-clustered force layout
@@ -8,7 +9,12 @@ import { api } from "../../api";
  * in rather than snapping into place, so "forming in the background" (the
  * decoupled graph write, §4.2) actually reads as live to a judge watching.
  * Stale facts stay in the graph (never deleted, only marked, per V1 §6.1) —
- * shown desaturated, with a dashed SUPERSEDED_BY edge to whatever replaced them.
+ * shown desaturated, coloured by the class JEV assigned them, with a dashed
+ * SUPERSEDED_BY edge to whatever replaced them.
+ *
+ * Hovering a node shows a tooltip with the full fact and its JEV verdict
+ * without needing a click, so the graph is explorable at a glance during a
+ * live demo; clicking still pins the full inspector.
  */
 
 const WIDTH = 720;
@@ -41,6 +47,8 @@ export default function GraphView({ sessionId, refreshSignal }) {
   const [graphData, setGraphData] = useState({ nodes: [], edges: [] });
   const [loading, setLoading] = useState(false);
   const [selectedNode, setSelectedNode] = useState(null);
+  const [hovered, setHovered] = useState(null); // { node, x, y } in px within the canvas box
+  const [openClass, setOpenClass] = useState(null);
   const [, bumpFrame] = useState(0);
 
   const posRef = useRef(new Map()); // fact node id -> {x, y, vx, vy, bornAt}
@@ -77,6 +85,17 @@ export default function GraphView({ sessionId, refreshSignal }) {
 
   const activeNodes = factNodes.filter((n) => n.status !== "stale");
   const staleNodes = factNodes.filter((n) => n.status === "stale");
+  const { groups: classGroups } = useMemo(() => groupByStaleClass(factNodes), [factNodes]);
+
+  // Hover tooltip position comes from the live force-layout position, so it has
+  // to be read from the ref at hover time and stored in screen px (the SVG
+  // viewBox is scaled to the box width).
+  function handleHover(node, event) {
+    const box = event.currentTarget.closest(".graph-canvas-box");
+    if (!box) return;
+    const rect = box.getBoundingClientRect();
+    setHovered({ node, x: event.clientX - rect.left, y: event.clientY - rect.top, w: rect.width, h: rect.height });
+  }
 
   // Seed positions for newly-arrived fact nodes near their entity's cluster
   // (small random offset, not the exact centroid, so overlapping new nodes
@@ -177,10 +196,10 @@ export default function GraphView({ sessionId, refreshSignal }) {
             Stale facts stay visible (never deleted) with a dashed <code>SUPERSEDED_BY</code> edge to their replacement.
           </p>
         </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
           <span className="badge badge-active">{activeNodes.length} Active</span>
-          <span className="badge" style={{ background: "rgba(255,107,107,0.15)", color: "var(--red)" }}>
-            {staleNodes.length} Stale / Superseded
+          <span className="badge" style={{ background: "rgba(168,85,247,0.15)", color: "var(--violet)" }}>
+            {staleNodes.length} Retired (kept, classified)
           </span>
         </div>
       </div>
@@ -245,25 +264,51 @@ export default function GraphView({ sessionId, refreshSignal }) {
                 if (!p) return null;
                 const isStale = node.status === "stale";
                 const isSelected = selectedNode?.id === node.id;
+                const isHovered = hovered?.node?.id === node.id;
+                const meta = isStale ? classMeta(node.stale_class) : null;
                 return (
                   <g
                     key={node.id}
+                    className="graph-node-hit"
                     transform={`translate(${p.x}, ${p.y})`}
                     opacity={opacityFor(p)}
                     onClick={() => setSelectedNode(node)}
+                    onMouseEnter={(e) => handleHover(node, e)}
+                    onMouseMove={(e) => handleHover(node, e)}
+                    onMouseLeave={() => setHovered(null)}
                     style={{ cursor: "pointer" }}
                   >
+                    {/* Invisible larger hit area — the visible circle is only
+                        10px, which is a frustrating hover target. */}
+                    <circle r={NODE_R + 8} fill="transparent" />
+                    {isStale && meta && (
+                      <circle
+                        r={NODE_R + 4 + (isHovered ? 2 : 0)}
+                        fill="none"
+                        stroke={meta.color}
+                        strokeWidth={1}
+                        opacity={0.35}
+                      />
+                    )}
                     <circle
-                      r={isSelected ? NODE_R + 2 : NODE_R}
-                      fill={isStale ? "var(--panel)" : "var(--green-dim)"}
-                      stroke={isSelected ? "var(--green)" : isStale ? "var(--text-faint)" : "var(--green)"}
-                      strokeWidth={isSelected ? 2.5 : 1.5}
+                      r={isSelected || isHovered ? NODE_R + 3 : NODE_R}
+                      fill={isStale ? "var(--panel)" : "var(--violet-dim)"}
+                      stroke={
+                        isSelected || isHovered
+                          ? "var(--violet)"
+                          : isStale
+                            ? meta?.color || "var(--text-faint)"
+                            : "var(--violet)"
+                      }
+                      strokeWidth={isSelected || isHovered ? 2.5 : 1.5}
                       strokeDasharray={isStale ? "3 2" : undefined}
                     />
                   </g>
                 );
               })}
             </svg>
+
+            {hovered && <NodeTooltip node={hovered.node} x={hovered.x} y={hovered.y} boxWidth={hovered.w} boxHeight={hovered.h} />}
           </div>
 
           {/* Details Sidebar */}
@@ -304,13 +349,139 @@ export default function GraphView({ sessionId, refreshSignal }) {
                     <div style={{ fontSize: 12 }}>{selectedNode.created_at}</div>
                   </div>
                 )}
+
+                {selectedNode.status === "stale" && (
+                  <div style={{ marginBottom: 10 }}>
+                    <span style={{ fontSize: 11, color: "var(--text-dim)" }}>JEV classification</span>
+                    <div style={{ marginTop: 4 }}>
+                      <span
+                        className="badge"
+                        style={{ background: `${classMeta(selectedNode.stale_class).color}22`, color: classMeta(selectedNode.stale_class).color }}
+                      >
+                        {classMeta(selectedNode.stale_class).label}
+                      </span>
+                      {selectedNode.stale_confidence > 0 && (
+                        <span style={{ fontSize: 11, color: "var(--text-faint)" }}>
+                          confidence {selectedNode.stale_confidence.toFixed(2)}
+                        </span>
+                      )}
+                    </div>
+                    {selectedNode.stale_reason && (
+                      <div style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 5, lineHeight: 1.45 }}>
+                        {selectedNode.stale_reason}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             ) : (
-              <div style={{ fontSize: 12, color: "var(--text-faint)", marginTop: 20 }}>
-                Click any fact node to inspect it. Dashed nodes/edges are stale facts and their <code>SUPERSEDED_BY</code> lineage — kept in the graph, excluded from Agent 2's context.
+              <div style={{ fontSize: 12, color: "var(--text-faint)", marginTop: 8, marginBottom: 16 }}>
+                Hover a node for its detail, click to pin it. Dashed nodes are stale facts — kept in the graph, excluded
+                from Agent 2's context.
               </div>
             )}
+
+            {/* JEV-assigned classes, grouped. This is the "why did this lose"
+                view: every retired node is bucketed by the class JEV picked. */}
+            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-dim)", textTransform: "uppercase", letterSpacing: 0.6, margin: "18px 0 10px" }}>
+              Classified by JEV ({staleNodes.length})
+            </div>
+
+            {classGroups.length === 0 ? (
+              <div style={{ fontSize: 12, color: "var(--text-faint)" }}>
+                Nothing retired yet. Conflicts found after a turn are marked stale and classified here.
+              </div>
+            ) : (
+              classGroups.map((group) => {
+                const isOpen = openClass === group.key;
+                return (
+                  <div className="class-group" key={group.key}>
+                    <button className="class-group-head" onClick={() => setOpenClass(isOpen ? null : group.key)}>
+                      <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span className="class-swatch" style={{ background: group.meta.color }} />
+                        {group.meta.label}
+                      </span>
+                      <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span className="class-count">{group.items.length}</span>
+                        <span style={{ color: "var(--text-faint)", fontSize: 10 }}>{isOpen ? "▲" : "▼"}</span>
+                      </span>
+                    </button>
+                    {isOpen && (
+                      <div className="class-body">
+                        <div className="class-desc">{group.meta.desc}</div>
+                        {group.items.map((item) => (
+                          <button
+                            className="class-item"
+                            key={item.id}
+                            onClick={() => setSelectedNode(item)}
+                          >
+                            {item.text}
+                            {item.stale_confidence > 0 && (
+                              <span className="conf">JEV confidence {item.stale_confidence.toFixed(2)}</span>
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })
+            )}
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+/**
+ * Hover card for a graph node. Flips to the other side of the cursor near the
+ * canvas edges so it is never clipped.
+ */
+function NodeTooltip({ node, x, y, boxWidth, boxHeight }) {
+  const isStale = node.status === "stale";
+  const meta = isStale ? classMeta(node.stale_class) : null;
+  const OFFSET = 14;
+  const TOOLTIP_W = 280;
+
+  const flipX = x + OFFSET + TOOLTIP_W > boxWidth;
+  const flipY = y > boxHeight * 0.6;
+
+  const style = {
+    left: flipX ? x - OFFSET : x + OFFSET,
+    top: flipY ? y - OFFSET : y + OFFSET,
+    transform: `translate(${flipX ? "-100%" : "0"}, ${flipY ? "-100%" : "0"})`,
+  };
+
+  return (
+    <div className="graph-tooltip" style={style}>
+      <div className="tt-title" style={isStale ? { color: meta.color } : undefined}>
+        {node.entity || "Fact"}
+      </div>
+      <div style={{ color: "var(--text)", marginBottom: 6 }}>{node.text}</div>
+      <div className="tt-row">
+        <span>Status</span>
+        <b style={{ color: isStale ? meta.color : "var(--green)" }}>{(node.status || "active").toUpperCase()}</b>
+      </div>
+      {isStale && (
+        <>
+          <div className="tt-row">
+            <span>JEV class</span>
+            <b style={{ color: meta.color }}>{meta.label}</b>
+          </div>
+          {node.stale_confidence > 0 && (
+            <div className="tt-row">
+              <span>Confidence</span>
+              <b>{node.stale_confidence.toFixed(2)}</b>
+            </div>
+          )}
+        </>
+      )}
+      {node.created_at && (
+        <div className="tt-row">
+          <span>Recorded</span>
+          <b>{String(node.created_at).slice(0, 10)}</b>
         </div>
       )}
     </div>

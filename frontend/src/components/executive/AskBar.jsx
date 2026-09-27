@@ -1,10 +1,13 @@
 import { useState } from "react";
 
+// Generic prompts, not facts from a demo story. They have to work against
+// whatever the agent has actually been told, so none of them assume a
+// particular datastore, vendor, or project.
 const SUGGESTIONS = [
-  "What database are we currently using?",
-  "What database did we use before?",
-  "What does Project Alpha depend on?",
-  "What authentication method are we using?",
+  "What do we currently use?",
+  "What did we use before?",
+  "What does the system depend on?",
+  "What changed most recently?",
 ];
 
 export default function AskBar({ onAsk, onTeach, busy }) {
@@ -21,7 +24,7 @@ export default function AskBar({ onAsk, onTeach, busy }) {
       <div className="ask-bar">
         <input
           type="text"
-          placeholder='Ask e.g. "What database are we currently using?"'
+          placeholder='Ask anything — "what are we using right now?"'
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && submit(onAsk)}

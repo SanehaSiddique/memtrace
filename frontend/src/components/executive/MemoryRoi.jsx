@@ -21,7 +21,7 @@ export default function MemoryRoi({ agentId, refreshSignal }) {
       </h3>
       {!hasActivity ? (
         <div className="empty-note">
-          No memory decisions recorded yet — ask a few questions or seed demo data to see which decisions are saving
+          No memory decisions recorded yet — ask a few questions to see which decisions are saving
           money.
         </div>
       ) : (

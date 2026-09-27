@@ -11,6 +11,9 @@ When new candidate facts are extracted for a session:
        (old_fact)-[:SUPERSEDED_BY]->(new_fact)
   5. If JEV denies contradiction: both stay active.
   6. If JEV is unavailable: rule-based semantic heuristic fallback.
+
+See `agent2/graph_cleaning.py` for the complementary pass that re-checks
+already-stored nodes for contradictions the per-entity lookup above missed.
 """
 
 from dataclasses import dataclass, field

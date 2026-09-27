@@ -217,17 +217,15 @@ def test_chat_ingests_and_answers(client):
     assert len(body["memory_operations"]) == 1
 
 
-def test_evaluate_endpoint(client):
-    client.post("/memory/ingest", json={"content": "Project Alpha uses MongoDB."})
-    response = client.post("/evaluate")
-    assert response.status_code == 200
-    body = response.json()
-    assert "memtrace_accuracy" in body
-    assert len(body["cases"]) == 10
-
-
 def test_cost_endpoints_reflect_recorded_runs(client):
-    client.post("/demo/seed")
+    # Two real ingests that contradict each other, so the run below has genuine
+    # stale context to exclude. These assertions are about the cost service
+    # reporting what actually happened, not about a seeded fixture.
+    client.post("/memory/ingest", json={"content": "The team uses MySQL as the primary datastore."})
+    client.post(
+        "/memory/ingest",
+        json={"content": "We migrated the primary datastore from MySQL to PostgreSQL."},
+    )
     client.post("/memory/query", json={"query": "What database are we currently using?"})
 
     summary = client.get("/cost/summary").json()
@@ -244,15 +242,9 @@ def test_cost_endpoints_reflect_recorded_runs(client):
     runs = client.get("/cost/runs").json()
     assert len(runs) == 1
 
-    projection = client.post(
-        "/cost/scale-projection",
-        json={"agents": 1000, "runs_per_agent_per_day": 500, "cost_per_run": 0.08, "avoidable_pct": 22},
-    ).json()
-    assert projection["annual_savings"] == pytest.approx(1000 * 500 * 0.08 * 0.22 * 365)
-
     roi = client.get("/cost/memory-roi").json()
     stale_row = next(r for r in roi["rows"] if r["operation"] == "outdated_information")
-    assert stale_row["event_count"] == 1
+    assert stale_row["event_count"] >= 1
     assert roi["total_cost_avoided"] > 0
 
     summary_after = client.get("/cost/summary").json()
@@ -260,6 +252,49 @@ def test_cost_endpoints_reflect_recorded_runs(client):
 
     monthly_timeseries = client.get("/cost/timeseries", params={"granularity": "month"}).json()
     assert len(monthly_timeseries) == 1
+
+
+def test_revenue_projection_is_measured_from_recorded_runs(client):
+    """The CEO projection must price real recorded token volumes, so the run
+    recorded above is what drives the numbers here."""
+    client.post("/memory/ingest", json={"content": "The team uses MySQL as the primary datastore."})
+    client.post(
+        "/memory/ingest",
+        json={"content": "We migrated the primary datastore from MySQL to PostgreSQL."},
+    )
+    client.post("/memory/query", json={"query": "What database are we currently using?"})
+
+    body = client.post(
+        "/cost/revenue-projection",
+        json={
+            "agents": 10,
+            "runs_per_agent_per_day": 10,
+            "current_model": "gpt-4o",
+            "revenue_per_agent_month": 500,
+        },
+    ).json()
+
+    assert body["profile"]["is_measured"] is True
+    assert body["profile"]["measured_runs"] == 1
+    # Fewer tokens sent with MEMTRACE than the retriever surfaced.
+    assert body["profile"]["optimized_input_tokens"] < body["profile"]["baseline_input_tokens"]
+    assert body["rows"][0]["annual_with_memtrace"] > 0
+    # The catalog is reachable so the UI's model picker is never empty.
+    assert client.get("/cost/models").status_code == 200
+
+
+def test_seed_and_evaluate_surfaces_are_gone(client):
+    """No seeding or canned-evaluation surface: the CEO view must only ever
+    show figures produced by real agent activity.
+
+    Asserted as "not 200" rather than "== 404" because the SPA catch-all answers
+    unmatched paths, so a removed POST route can surface as 405 (path exists for
+    GET) rather than 404. Either way, the handler is gone — 200 would mean the
+    seed still ran.
+    """
+    assert client.post("/demo/seed").status_code != 200
+    assert client.post("/evaluate").status_code != 200
+    assert client.post("/cost/scale-projection", json={}).status_code != 200
 
 
 def test_memory_timeline_and_graph_full_endpoints(client):

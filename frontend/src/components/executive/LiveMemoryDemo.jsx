@@ -4,10 +4,15 @@ import { formatUsd } from "../../format";
 import { buildChains } from "../../graphUtils";
 import MetricBadge from "../shared/MetricBadge";
 
-const FOCUS_PREDICATES = {
+// Predicate → short label, used to caption each lineage. Any predicate not
+// listed still renders (raw, underscored) — this only prettifies the ones
+// agents commonly emit.
+const PREDICATE_LABELS = {
   uses_database: "Database",
   uses_auth: "Authentication",
   deployed_on: "Hosted on",
+  depends_on: "Depends on",
+  rejected: "Rejected",
 };
 
 const PIPELINE_STEPS = [
@@ -22,17 +27,11 @@ const PIPELINE_STEPS = [
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-function suggestNextEvent(memories) {
-  const objects = memories.map((m) => m.object);
-  const contents = memories.map((m) => m.content);
-  if (!objects.includes("PostgreSQL")) {
-    return "We migrated from MongoDB to PostgreSQL because relational querying became important.";
-  }
-  if (!contents.some((c) => c.includes("connection pool"))) {
-    return "We updated the PostgreSQL configuration to increase the connection pool size.";
-  }
-  return "";
-}
+// Placeholders, not content. Nothing here asserts a fact about anyone's stack —
+// the CEO types the real ones, which is the entire point of removing the seed.
+const EXAMPLE_FACT = "We use Postgres as the primary datastore.";
+const EXAMPLE_CHANGE = "We migrated the primary datastore to Postgres last week.";
+const EXAMPLE_QUERY = "What are we using right now?";
 
 export default function LiveMemoryDemo({ agentId, conversationId, onActivity }) {
   const [nodes, setNodes] = useState([]);
@@ -43,7 +42,7 @@ export default function LiveMemoryDemo({ agentId, conversationId, onActivity }) 
   const [simulating, setSimulating] = useState(false);
   const [animatingIds, setAnimatingIds] = useState({});
 
-  const [queryText, setQueryText] = useState("Which database does Project Alpha use?");
+  const [queryText, setQueryText] = useState(EXAMPLE_QUERY);
   const [stage, setStage] = useState("idle"); // idle | querying | done
   const [stepIndex, setStepIndex] = useState(0);
   const [queryResult, setQueryResult] = useState(null);
@@ -64,34 +63,25 @@ export default function LiveMemoryDemo({ agentId, conversationId, onActivity }) 
 
   useEffect(() => {
     setLoading(true);
-    reload()
-      .then(({ nodes: n }) => setEventText(suggestNextEvent(n)))
-      .finally(() => setLoading(false));
+    reload().finally(() => setLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agentId]);
 
-  const chains = useMemo(
-    () => buildChains(nodes).filter((lineage) => FOCUS_PREDICATES[lineage[0].predicate]),
-    [nodes],
-  );
+  // Every lineage, not just the three predicates the old demo story happened to
+  // use. Filtering by a hardcoded predicate list would hide real memories the
+  // agent extracted, which is the opposite of what this view is for.
+  const chains = useMemo(() => buildChains(nodes), [nodes]);
 
-  // A focused 3-fact starting point (matching the classic "MongoDB / session
-  // auth / AWS, all ACTIVE" scenario) — deliberately small, so the
-  // MongoDB -> PostgreSQL migration below is something you can actually watch
-  // happen live, not something that already happened before you opened the
-  // page. If memories already exist, `chains.length > 0` and this never shows.
-  async function handleSetUpScenario() {
-    setLoading(true);
-    try {
-      await api.ingest("Project Alpha uses MongoDB.", agentId, conversationId);
-      await api.ingest("Project Alpha uses session-based authentication.", agentId, conversationId);
-      await api.ingest("Project Alpha uses AWS.", agentId, conversationId);
-      const { nodes: n } = await reload();
-      setEventText(suggestNextEvent(n));
-      onActivity?.();
-    } finally {
-      setLoading(false);
+  // Seeds ONE placeholder fact the CEO can edit or replace. This exists so the
+  // graph isn't an empty box on a cold start — it is a starting point, not
+  // fabricated content: whatever they type is what gets stored.
+  async function handleStartFromExample() {
+    if (eventText.trim()) {
+      await handleSimulate();
+      return;
     }
+    setEventText(EXAMPLE_FACT);
+    setQueryText(EXAMPLE_QUERY);
   }
 
   async function handleSimulate() {
@@ -100,9 +90,9 @@ export default function LiveMemoryDemo({ agentId, conversationId, onActivity }) 
     try {
       const result = await api.ingest(eventText.trim(), agentId, conversationId);
       const op = result.operations[0];
-      const { nodes: n } = await reload();
+      await reload();
       setAnimatingIds({ newId: op?.memory_id, oldId: op?.target_memory_id });
-      setEventText(suggestNextEvent(n));
+      setEventText("");
       setTimeout(() => setAnimatingIds({}), 2600);
       onActivity?.();
     } finally {
@@ -180,12 +170,33 @@ export default function LiveMemoryDemo({ agentId, conversationId, onActivity }) 
       <div className="card">
         <h3 className="card-title">Live memory graph</h3>
         <div className="empty-note">
-          Set up the scenario to see MongoDB → PostgreSQL migrate live (a small, focused starting point so you can
-          actually watch the migration happen below).
+          Nothing remembered yet. Tell the agent one fact, then tell it a change — you'll watch the graph form, the old
+          fact get retired, and the agent answer from what's still current.
         </div>
-        <button className="btn btn-primary" onClick={handleSetUpScenario} style={{ marginTop: 12 }}>
-          Set up scenario
-        </button>
+        <div style={{ display: "flex", gap: 10, marginTop: 14, flexWrap: "wrap" }}>
+          <input
+            type="text"
+            value={eventText}
+            onChange={(e) => setEventText(e.target.value)}
+            placeholder="e.g. We run our primary API on Kubernetes."
+            style={{
+              flex: 1,
+              minWidth: 240,
+              background: "var(--panel-2)",
+              border: "1px solid var(--border)",
+              color: "var(--text)",
+              padding: "10px 12px",
+              borderRadius: "var(--radius-sm)",
+              fontSize: 13,
+            }}
+          />
+          <button className="btn btn-primary" onClick={handleStartFromExample} disabled={simulating}>
+            {simulating ? "Saving…" : "Store this fact"}
+          </button>
+          <button className="btn" onClick={() => setEventText(EXAMPLE_FACT)} title="Fill the field with an example you can edit">
+            Use an example
+          </button>
+        </div>
       </div>
     );
   }
@@ -215,7 +226,7 @@ export default function LiveMemoryDemo({ agentId, conversationId, onActivity }) 
           const head = lineage[0];
           return (
             <div key={head.id} className={nodeClassName(head)} style={{ cursor: "default" }}>
-              {FOCUS_PREDICATES[head.predicate]}: {head.object} {head.status === "ACTIVE" ? "✓" : `· ${head.status.toLowerCase()}`}
+              {PREDICATE_LABELS[head.predicate] || head.predicate.replaceAll("_", " ")}: {head.object} {head.status === "ACTIVE" ? "✓" : `· ${head.status.toLowerCase()}`}
             </div>
           );
         })}
@@ -228,7 +239,7 @@ export default function LiveMemoryDemo({ agentId, conversationId, onActivity }) 
           return (
             <div className="memory-chain" key={head.id}>
               <div style={{ fontSize: 12, color: "var(--text-faint)", marginBottom: 4 }}>
-                {FOCUS_PREDICATES[head.predicate]}
+                {PREDICATE_LABELS[head.predicate] || head.predicate.replaceAll("_", " ")}
               </div>
               {ancestors.map((ancestor) => (
                 <div key={ancestor.id}>
@@ -275,7 +286,7 @@ export default function LiveMemoryDemo({ agentId, conversationId, onActivity }) 
           value={queryText}
           onChange={(e) => setQueryText(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && handleRunQuery()}
-          placeholder='Ask e.g. "Which database does Project Alpha use?"'
+          placeholder="Ask the agent anything about what it knows"
         />
         <button className="btn btn-primary" onClick={handleRunQuery} disabled={stage === "querying"}>
           {stage === "querying" ? "Running…" : "Run agent query"}
